@@ -1,55 +1,62 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Network Asset Scan</title>
 
   <style>
-    :root { --bg:#0b1220; --card:#111a2c; --text:#e5e7eb; --muted:#9ca3af; --accent:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
-    body { font-family: Arial, sans-serif; padding: 12px; margin: 0; background: var(--bg); color: var(--text); }
-    h1 { font-size: 18px; margin: 0 0 6px 0; }
-    .sub { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
-    .card { background: var(--card); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px; }
-    .field { margin: 10px 0; }
-    label { display:block; font-size: 12px; margin-bottom: 4px; color: var(--muted); }
-    input, select, button {
-      width: 100%;
-      padding: 12px;
-      font-size: 15px;
-      box-sizing: border-box;
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.12);
-      background: rgba(0,0,0,0.15);
-      color: var(--text);
+    :root{
+      --bg:#0b1220; --card:#111a2c; --text:#e5e7eb; --muted:#9ca3af;
+      --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --soft:rgba(255,255,255,.08);
+      --border:rgba(255,255,255,.12);
     }
-    input::placeholder { color: rgba(229,231,235,0.35); }
-    .row { display:flex; gap:10px; }
-    .row > div { flex:1; }
-    .btn { border: none; cursor: pointer; }
-    .btnPrimary { background: var(--accent); color: #06210f; font-weight: 800; }
-    .btnSecondary { background: rgba(255,255,255,0.08); color: var(--text); font-weight: 700; }
-    .btnDanger { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.5); color: #fecaca; font-weight: 800; }
-    .big { padding: 14px; font-size: 16px; }
-    .msg { margin-top: 10px; font-size: 13px; }
-    .ok { color: #86efac; }
-    .warn { color: #fcd34d; }
-    .bad { color: #fca5a5; }
-    .dupeBox { margin-top:10px; padding:10px; border-radius: 12px; background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.35); display:none; }
-    .dupeBox.bad { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.35); }
-    .dupeTitle { font-weight: 800; margin-bottom: 6px; }
-    .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
-    .lock { opacity: 0.35; pointer-events: none; filter: grayscale(0.5); }
-    .tiny { font-size: 12px; color: var(--muted); margin-top: 6px; }
-    video { width:100%; max-height: 320px; border-radius: 12px; background: #000; }
+    body{ margin:0; padding:12px; font-family:Arial, sans-serif; background:var(--bg); color:var(--text); }
+    h1{ font-size:18px; margin:0 0 6px 0; }
+    .sub{ font-size:12px; color:var(--muted); margin-bottom:10px; line-height:1.35; }
+    .card{ background:var(--card); border:1px solid var(--soft); border-radius:14px; padding:12px; }
+    .field{ margin:10px 0; }
+    label{ display:block; font-size:12px; margin-bottom:4px; color:var(--muted); }
+    input, select, button{
+      width:100%; padding:12px; font-size:15px; border-radius:12px;
+      border:1px solid var(--border); background:rgba(0,0,0,.15); color:var(--text);
+      box-sizing:border-box;
+    }
+    input::placeholder{ color:rgba(229,231,235,.35); }
+    .row{ display:flex; gap:10px; }
+    .row > div{ flex:1; }
+    button{ border:none; cursor:pointer; font-weight:800; }
+    .btnPrimary{ background:var(--ok); color:#06210f; }
+    .btnSecondary{ background:rgba(255,255,255,.08); color:var(--text); border:1px solid rgba(255,255,255,.14); }
+    .btnDanger{ background:rgba(239,68,68,.12); color:#fecaca; border:1px solid rgba(239,68,68,.45); }
+    .big{ padding:14px; font-size:16px; }
+    video{
+      width:100%; max-height:340px; border-radius:12px; background:#000; border:1px solid rgba(255,255,255,.10);
+    }
+    .msg{ margin-top:10px; font-size:13px; }
+    .ok{ color:#86efac; } .warn{ color:#fcd34d; } .bad{ color:#fca5a5; }
+    .tiny{ font-size:12px; color:var(--muted); margin-top:6px; }
+    .dupeBox{ margin-top:10px; padding:10px; border-radius:12px; display:none;
+      background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.35);
+    }
+    .dupeBox.bad{ background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.35); }
+    .dupeTitle{ font-weight:900; margin-bottom:6px; }
+    .lock{ opacity:.35; pointer-events:none; filter:grayscale(.5); }
+    .pillRow{ display:flex; gap:10px; flex-wrap:wrap; }
+    .pill{ flex:1; min-width: 160px; }
   </style>
 
+  <!-- Barcode/QR -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <!-- OCR fallback -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 
 <body>
   <h1>Network Asset Scan</h1>
   <div class="sub">
-    Auto-detects Make/Model/Type. First scan is Serial/MAC. Next scan is Asset Tag. (1D + QR supported)
+    <b>Rack Audit Mode:</b> Serial/MAC first → Asset Tag next. Auto barcode scan + automatic OCR fallback for tiny labels.
+    Autodetect Make/Model/Type (best-effort). Model learning + recents + same-as-last.
   </div>
 
   <div id="app" class="card">
@@ -85,54 +92,65 @@
       <div class="field">
         <label for="modelPick">Model suggestions (by Device Type)</label>
         <select id="modelPick"><option value="">-- Select a model to auto-fill (or type below) --</option></select>
-        <div class="hint" id="modelHint"></div>
+        <div class="tiny" id="modelHint"></div>
       </div>
       <div class="field">
         <label for="recentPick">Recent models (last 10)</label>
         <select id="recentPick"><option value="">-- Recent models --</option></select>
-        <div class="hint">Remembered per Device Type + Make.</div>
+        <div class="tiny">Remembered per Device Type + Make.</div>
       </div>
     </div>
 
     <div class="row">
       <div class="field">
         <label for="model">Model *</label>
-        <input type="text" id="model" placeholder="Type model (or pick above)">
-        <div class="tiny">Tip: if you type a new model once, it becomes a suggestion next time.</div>
+        <input id="model" type="text" placeholder="Type model (or pick above)" />
+        <div class="tiny">Type a model once → it becomes a suggestion next time.</div>
       </div>
-      <div class="field" style="display:flex; gap:10px; align-items:flex-end;">
-        <button id="sameModelBtn" class="btn btnSecondary" type="button">Same model as last</button>
-        <button id="unknownModelBtn" class="btn btnSecondary" type="button">Unknown / Other model</button>
+      <div class="field">
+        <label>Quick buttons</label>
+        <div class="pillRow">
+          <button id="sameModelBtn" class="btnSecondary pill" type="button">Same model as last</button>
+          <button id="unknownModelBtn" class="btnSecondary pill" type="button">Unknown / Other model</button>
+        </div>
       </div>
     </div>
 
     <div class="field">
       <label for="serial">Serial (Serial OR MAC required)</label>
-      <input type="text" id="serial" placeholder="Auto-filled from scan (or type)">
+      <input id="serial" type="text" placeholder="Auto-filled from scan (or type)" />
     </div>
 
     <div class="field">
       <label for="mac">MAC (Serial OR MAC required)</label>
-      <input type="text" id="mac" placeholder="Auto-filled from scan (auto-formats)">
+      <input id="mac" type="text" placeholder="Auto-filled from scan (auto-formats)" />
     </div>
 
     <div class="field">
       <label for="assetTag">Company Asset Tag *</label>
-      <input type="text" id="assetTag" placeholder="Auto-filled from scan (or type)">
+      <input id="assetTag" type="text" placeholder="Auto-filled from scan (or type)" />
     </div>
 
     <div class="field">
       <label>Camera</label>
       <video id="video" autoplay muted playsinline></video>
       <div class="tiny" id="stageHint"></div>
+      <div class="tiny" id="techHint"></div>
     </div>
 
     <div class="row">
-      <div><button id="startBtn" class="btn btnPrimary big" type="button">START SCANNING</button></div>
-      <div><button id="stopBtn" class="btn btnDanger big" type="button">STOP</button></div>
+      <div><button id="startBtn" class="btnPrimary big" type="button">START SCANNING</button></div>
+      <div><button id="stopBtn" class="btnDanger big" type="button">STOP</button></div>
     </div>
 
-    <button id="submitBtn" class="btn btnPrimary big" disabled type="button" style="margin-top:10px;">SUBMIT TO SHEET</button>
+    <div class="row" style="margin-top:10px;">
+      <div><button id="torchBtn" class="btnSecondary big" type="button">FLASHLIGHT</button></div>
+      <div><button id="ocrBtn" class="btnSecondary big" type="button">FORCE OCR (tiny labels)</button></div>
+    </div>
+
+    <button id="submitBtn" class="btnPrimary big" disabled type="button" style="margin-top:10px;">
+      SUBMIT TO SHEET
+    </button>
 
     <div id="dupeBox" class="dupeBox">
       <div class="dupeTitle">Heads up:</div>
@@ -146,7 +164,7 @@
 /*************************************************
  * CONFIG
  *************************************************/
-const API_BASE = "https://script.google.com/macros/s/AKfycbwlpaGqxw08bZ7jC2uxjWbOUq5Ru3SRrXHdPyTZcBq39y7vZm5nGsNjzP2LZJQTj_qUNw/exec"; // <-- your Apps Script /exec
+const API_BASE = "https://script.google.com/macros/s/AKfycbwlpaGqxw08bZ7jC2uxjWbOUq5Ru3SRrXHdPyTZcBq39y7vZm5nGsNjzP2LZJQTj_qUNw/exec";
 const ACCESS_KEY = new URLSearchParams(location.search).get("k") || "";
 
 function el(id){ return document.getElementById(id); }
@@ -154,11 +172,11 @@ function setStatus(msg, cls){ const s=el('status'); s.textContent=msg||""; s.cla
 function norm_(s){ return (s||"").toString().trim(); }
 
 /*************************************************
- * Lock if missing key
+ * KEY LOCK
  *************************************************/
 function lockIfNoKey_(){
   if (ACCESS_KEY) return;
-  setStatus("Missing access key. Use the link with ?k=YOURKEY", "bad");
+  setStatus("Missing access key. Use link like: ?k=FIT-SCAN-2026", "bad");
   el('app').classList.add('lock');
 }
 
@@ -172,7 +190,6 @@ async function apiCheckDuplicates(serial, mac, assetTag){
   url.searchParams.set("serial", serial || "");
   url.searchParams.set("mac", mac || "");
   url.searchParams.set("assetTag", assetTag || "");
-
   const res = await fetch(url.toString(), { method:"GET", cache:"no-store" });
   const j = await res.json();
   if (!j.ok) throw new Error(j.error || "Duplicate check failed");
@@ -189,13 +206,11 @@ async function apiSubmit(payload){
   body.set("serial", payload.serial || "");
   body.set("mac", payload.mac || "");
   body.set("assetTag", payload.assetTag || "");
-
   const res = await fetch(API_BASE, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
     body: body.toString()
   });
-
   const j = await res.json();
   if (!j.ok) throw new Error(j.error || "Submit failed");
   return j;
@@ -215,36 +230,35 @@ function formatMac(s){
 }
 
 /*************************************************
- * Model lists + learning
+ * MODEL LISTS + LEARNING
  *************************************************/
 const BASE_MODELS = {
-  "Cisco": {
-    "Switch": [
-      "WS-C2960S-24TS-L",
-      "Catalyst 9200","Catalyst 9300","Catalyst 9500","Catalyst 2960","Catalyst 3650","Catalyst 3850","Nexus 3K","Nexus 9K"
-    ],
-    "AP": ["Aironet 2800","Aironet 3800","Catalyst 9115","Catalyst 9120","Catalyst 9130"],
-    "Other": []
-  },
-  "Juniper": { "Switch":["EX2300","EX3400","EX4300","EX4400","QFX5100","QFX5120"], "AP":[], "Other":[] },
-  "Aruba":   { "Switch":["2930F","2930M","3810M","CX 6100","CX 6200","CX 6300","CX 6400"], "AP":["AP-505","AP-515","AP-535","AP-555","AP-635"], "Other":[] },
-  "Motorola":{ "Switch":[], "AP":[], "Other":["TW-511"] },
-  "DSLAM":   { "Switch":["Adtran TA5000","Calix E7-2","Calix E7-20","Nokia 7360 ISAM","Nokia 7330 ISAM","Huawei MA5600","Huawei MA5800"], "AP":[], "Other":[] },
-  "Fortinet":{ "Switch":["FortiSwitch 108F","FortiSwitch 124F","FortiSwitch 248E"], "AP":["FortiAP 231F","FortiAP 431F"], "Other":[] },
-  "Ruckus":  { "Switch":["ICX 7150","ICX 7250","ICX 7450"], "AP":["R510","R610","R650","R750"], "Other":[] },
-  "Ubiquiti":{ "Switch":["USW-24-PoE","USW-Pro-24-PoE","USW-48-PoE","USW-Pro-48-PoE","USW-Enterprise-24-PoE","USW-Aggregation"], "AP":["U6-Lite","U6-LR","U6-Pro","U6-Enterprise","U6-Mesh","U7-Pro"], "Other":[] },
-  "TP-Link": { "Switch":["TL-SG2008P","TL-SG2210P"], "AP":["Omada EAP610","Omada EAP650"], "Other":[] },
-  "Netgear": { "Switch":["GS108","GS110TP","M4300"], "AP":["WAX610","WAX630"], "Other":[] },
-  "Other":   { "Switch":[], "AP":[], "Other":[] }
+  "Cisco": { "Switch":[ "WS-C2960S-24TS-L","Catalyst 9200","Catalyst 9300","Catalyst 9500","Catalyst 2960","Catalyst 3650","Catalyst 3850","Nexus 3K","Nexus 9K" ],
+            "AP":[ "Aironet 2800","Aironet 3800","Catalyst 9115","Catalyst 9120","Catalyst 9130" ],
+            "Other":[] },
+  "Juniper": { "Switch":[ "EX2300","EX3400","EX4300","EX4400","QFX5100","QFX5120" ], "AP":[], "Other":[] },
+  "Aruba": { "Switch":[ "2930F","2930M","3810M","CX 6100","CX 6200","CX 6300","CX 6400" ],
+            "AP":[ "AP-505","AP-515","AP-535","AP-555","AP-635" ],
+            "Other":[] },
+  "Motorola": { "Switch":[], "AP":[], "Other":[ "TW-511" ] },
+  "DSLAM": { "Switch":[ "Adtran TA5000","Calix E7-2","Calix E7-20","Nokia 7360 ISAM","Nokia 7330 ISAM","Huawei MA5600","Huawei MA5800" ],
+            "AP":[], "Other":[] },
+  "Fortinet": { "Switch":[ "FortiSwitch 108F","FortiSwitch 124F","FortiSwitch 248E" ], "AP":[ "FortiAP 231F","FortiAP 431F" ], "Other":[] },
+  "Ruckus": { "Switch":[ "ICX 7150","ICX 7250","ICX 7450" ], "AP":[ "R510","R610","R650","R750" ], "Other":[] },
+  "Ubiquiti": { "Switch":[ "USW-24-PoE","USW-Pro-24-PoE","USW-48-PoE","USW-Pro-48-PoE","USW-Enterprise-24-PoE","USW-Aggregation" ],
+               "AP":[ "U6-Lite","U6-LR","U6-Pro","U6-Enterprise","U6-Mesh","U7-Pro" ],
+               "Other":[] },
+  "TP-Link": { "Switch":[ "TL-SG2008P","TL-SG2210P" ], "AP":[ "Omada EAP610","Omada EAP650" ], "Other":[] },
+  "Netgear": { "Switch":[ "GS108","GS110TP","M4300" ], "AP":[ "WAX610","WAX630" ], "Other":[] },
+  "Other": { "Switch":[], "AP":[], "Other":[] }
 };
 
-const LS_CUSTOM_MODELS = "scan2_custom_models_v2";
-const LS_RECENTS = "scan2_recent_models_v2";
-const LS_LAST_MODEL = "scan2_last_model_by_make_type_v2";
+const LS_CUSTOM_MODELS = "scan2_custom_models_v3";
+const LS_RECENTS = "scan2_recent_models_v3";
+const LS_LAST_MODEL = "scan2_last_model_v3";
 
 function loadJSON_(k){ try { return JSON.parse(localStorage.getItem(k)||"{}"); } catch { return {}; } }
 function saveJSON_(k, v){ localStorage.setItem(k, JSON.stringify(v||{})); }
-
 function getDeviceType(){ return el('deviceType').value || "Other"; }
 function getMake(){ return el('make').value || "Other"; }
 
@@ -254,7 +268,7 @@ function addCustomModel(make, type, model){
   obj[make]=obj[make]||{}; obj[make][type]=obj[make][type]||[];
   obj[make][type]=obj[make][type].filter(x=>x.toLowerCase()!==m.toLowerCase());
   obj[make][type].unshift(m);
-  if(obj[make][type].length>40) obj[make][type]=obj[make][type].slice(0,40);
+  if(obj[make][type].length>50) obj[make][type]=obj[make][type].slice(0,50);
   saveJSON_(LS_CUSTOM_MODELS, obj);
 }
 
@@ -302,14 +316,12 @@ function buildModelList(make, type){
 
 function populateModelPickers(){
   const make=getMake(), type=getDeviceType();
-
   const models=buildModelList(make, type);
+
   const pick=el('modelPick');
   pick.innerHTML=`<option value="">-- Select a model to auto-fill (or type below) --</option>`;
   models.forEach(m=>{
-    const o=document.createElement('option');
-    o.value=m; o.textContent=m;
-    pick.appendChild(o);
+    const o=document.createElement('option'); o.value=m; o.textContent=m; pick.appendChild(o);
   });
 
   const rec=loadJSON_(LS_RECENTS);
@@ -317,12 +329,10 @@ function populateModelPickers(){
   const rp=el('recentPick');
   rp.innerHTML=`<option value="">-- Recent models --</option>`;
   recList.forEach(m=>{
-    const o=document.createElement('option');
-    o.value=m; o.textContent=m;
-    rp.appendChild(o);
+    const o=document.createElement('option'); o.value=m; o.textContent=m; rp.appendChild(o);
   });
 
-  el('modelHint').textContent=`Showing ${type} models for ${make}.`;
+  el('modelHint').textContent = `Showing ${type} models for ${make}.`;
   updateSameModelButton();
 }
 
@@ -338,26 +348,22 @@ function learnModelIfNew_(){
 }
 
 /*************************************************
- * Autodetect (best-effort)
+ * AUTODETECT (best-effort)
  *************************************************/
 function detectModelFromText_(t){
   const s = norm_(t);
 
-  // Cisco WS-C...
   const ciscoModel = s.match(/\bWS-C[0-9A-Z\-]+\b/i);
   if (ciscoModel) return ciscoModel[0].toUpperCase();
 
-  // Juniper EX/QFX
   const jun = s.match(/\b(EX|QFX)\d{3,4}\b/i);
   if (jun) return jun[0].toUpperCase();
 
-  // Aruba
   const arubaCx = s.match(/\bCX\s?\d{4}\b/i);
   if (arubaCx) return arubaCx[0].toUpperCase().replace(/\s+/g,' ');
   const arubaAp = s.match(/\bAP-\d{3}\b/i);
   if (arubaAp) return arubaAp[0].toUpperCase();
 
-  // Motorola from your label
   const moto = s.match(/\bTW-511\b/i);
   if (moto) return "TW-511";
 
@@ -367,25 +373,21 @@ function detectModelFromText_(t){
 function detectMakeFromModel_(model){
   const m = norm_(model).toUpperCase();
   if (!m) return "";
-
   if (m.startsWith("WS-C") || m.includes("CATALYST") || m.includes("NEXUS")) return "Cisco";
   if (m.startsWith("EX") || m.startsWith("QFX")) return "Juniper";
   if (m.startsWith("AP-") || m.startsWith("CX")) return "Aruba";
   if (m === "TW-511") return "Motorola";
-
-  // DSLAM-ish model words
   if (m.includes("ISAM") || m.includes("TA5000") || m.includes("E7") || m.includes("MA5600") || m.includes("MA5800")) return "DSLAM";
-
   return "";
 }
 
 const OUI_HINTS = {
-  "001B0C":"Cisco", "0026C8":"Cisco", "0C2724":"Cisco", "F0F7E7":"Cisco",
-  "0010DB":"Juniper", "5C5B35":"Juniper",
-  "000B86":"Aruba", "D89E3F":"Aruba",
-  "F09FC2":"Ubiquiti", "24A43C":"Ubiquiti",
+  "001B0C":"Cisco","0026C8":"Cisco","0C2724":"Cisco","F0F7E7":"Cisco",
+  "0010DB":"Juniper","5C5B35":"Juniper",
+  "000B86":"Aruba","D89E3F":"Aruba",
+  "F09FC2":"Ubiquiti","24A43C":"Ubiquiti",
   "000D58":"Ruckus",
-  "FCA13E":"Fortinet",
+  "FCA13E":"Fortinet"
 };
 
 function detectMakeFromMac_(mac){
@@ -398,7 +400,6 @@ function detectMakeFromMac_(mac){
 function detectDeviceTypeFromModel_(model, make){
   const m = norm_(model).toUpperCase();
   const mk = norm_(make);
-
   if (mk === "DSLAM") return "Switch";
   if (m.startsWith("AP-") || m.includes("AIR-") || m.startsWith("U6-") || m.startsWith("U7-")) return "AP";
   if (mk === "Motorola") return "Other";
@@ -415,7 +416,6 @@ function applyAutoDetect_(decodedText){
   if (!makeGuess && looksLikeMac(raw)) makeGuess = detectMakeFromMac_(raw);
 
   if (makeGuess) el('make').value = makeGuess;
-
   if (modelFromText && !el('model').value.trim()) el('model').value = modelFromText;
 
   const typeGuess = detectDeviceTypeFromModel_(el('model').value, el('make').value);
@@ -426,15 +426,11 @@ function applyAutoDetect_(decodedText){
 }
 
 /*************************************************
- * Stage-based scan flow: ID first (Serial/MAC) then Asset
+ * DUPLICATE UI
  *************************************************/
-let scanStage = "id"; // "id" -> "asset"
 let dupeState = { ok:true, issues:[] };
 let dupeTimer = null;
 
-/*************************************************
- * Duplicate UI
- *************************************************/
 function showDupe(issues){
   const box=el('dupeBox');
   const list=el('dupeList');
@@ -461,8 +457,7 @@ async function runDupeCheck(){
     dupeState = result || { ok:true, issues:[] };
     showDupe(dupeState.issues||[]);
     updateSubmitEnabled();
-  }catch(e){
-    // Don’t hard-block for network issues
+  }catch{
     dupeState = { ok:true, issues:[] };
     showDupe([]);
     updateSubmitEnabled();
@@ -470,7 +465,7 @@ async function runDupeCheck(){
 }
 
 /*************************************************
- * Validation
+ * VALIDATION
  *************************************************/
 function updateSubmitEnabled(){
   const deviceType=el('deviceType').value.trim();
@@ -479,115 +474,316 @@ function updateSubmitEnabled(){
   const serial=el('serial').value.trim();
   const mac=el('mac').value.trim();
   const assetTag=el('assetTag').value.trim();
-
   const hasSerialOrMac=!!(serial||mac);
   const requiredOK=deviceType && make && model && assetTag && hasSerialOrMac;
   const noDupes=(dupeState && dupeState.ok);
-
   el('submitBtn').disabled = !(requiredOK && noDupes);
 }
 
 /*************************************************
- * ZXing scanner (1D + QR)
+ * RACK AUDIT MODE — Scan Stage
  *************************************************/
-let reader = null;
-let scanning = false;
-
+let scanStage = "id"; // "id" -> "asset"
 function stageHint_(){
   el('stageHint').textContent =
     (scanStage === "id")
       ? "Stage 1: Scan SERIAL or MAC (auto-detects)."
       : "Stage 2: Scan ASSET TAG (required).";
 }
-
-function buzz_(){
-  try { navigator.vibrate?.(80); } catch {}
+function beep_(){
+  try{
+    // short beep using WebAudio
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 880;
+    gain.gain.value = 0.05;
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start();
+    setTimeout(()=>{ osc.stop(); ctx.close(); }, 80);
+  }catch{}
+  try{ navigator.vibrate?.(60); }catch{}
 }
 
-function setFieldFromScan_(text){
-  const raw = norm_(text);
-
-  // Always try autodetect on every scan
-  applyAutoDetect_(raw);
-
-  if (scanStage === "id"){
-    if (looksLikeMac(raw)){
-      el('mac').value = formatMac(raw);
-      setStatus("MAC captured — now scan Asset Tag.", "ok");
-    } else {
-      el('serial').value = raw;
-      setStatus("Serial captured — now scan Asset Tag.", "ok");
-    }
-    scanStage = "asset";
-  } else {
-    el('assetTag').value = raw;
-    setStatus("Asset Tag captured — ready to submit.", "ok");
-    // Keep stage as asset until submit, but user can rescan if needed.
-  }
-
-  stageHint_();
-  buzz_();
-  updateSubmitEnabled();
-  debouncedDupeCheck();
-
-  // If they got to Asset stage and model is still blank, push cursor there
-  if (scanStage === "asset" && !el('model').value.trim()){
-    setStatus("Quick stop: pick/type Model (then scan Asset Tag).", "warn");
-    el('model').focus();
-  }
-}
+/*************************************************
+ * ZXING Scanner
+ *************************************************/
+let reader = null;
+let scanning = false;
+let ocrBusy = false;
+let ocrTimer = null;
 
 async function startScan(){
   if (!ACCESS_KEY) return;
-
   if (scanning) return;
+
   scanning = true;
   setStatus("Starting camera…", "warn");
   stageHint_();
 
-  try {
+  try{
     if (!reader) reader = new ZXing.BrowserMultiFormatReader();
 
-    // ✅ Compatible across ZXing builds:
-    // getVideoInputDevices() exists on BrowserCodeReader / BrowserMultiFormatReader instances
     const devices = await reader.getVideoInputDevices();
     const back = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[0];
+
+    // Auto OCR fallback if barcode doesn't hit quickly (tiny labels)
+    if (ocrTimer) clearTimeout(ocrTimer);
+    ocrTimer = setTimeout(async ()=>{
+      if (scanning && !ocrBusy) await runOCRFallback("auto");
+    }, 1400);
 
     await reader.decodeFromVideoDevice(
       back?.deviceId,
       "video",
       (result, err) => {
-        if (result?.text) {
-          // stop one decode cycle
-          reader.reset();
+        if (result?.text){
+          if (ocrTimer) clearTimeout(ocrTimer);
+
+          // Stop one cycle so we don't double-fire
+          try{ reader.reset(); }catch{}
           scanning = false;
 
-          setFieldFromScan_(result.text);
+          handleDecodedText_(result.text, "barcode");
 
-          // warehouse-speed restart
-          setTimeout(() => startScan(), 120);
+          // Warehouse-speed restart
+          setTimeout(()=>startScan(), 120);
         }
       }
     );
 
     setStatus("Camera ready — scan now.", "warn");
-  } catch (e) {
+  }catch(e){
     scanning = false;
     setStatus("Camera error: " + (e.message || e), "bad");
   }
 }
 
 function stopScan(){
-  try { reader?.reset(); } catch {}
+  try{ reader?.reset(); }catch{}
   scanning = false;
+  if (ocrTimer) clearTimeout(ocrTimer);
   setStatus("Stopped.", "");
 }
 
 /*************************************************
- * Submit + reset
+ * OCR FALLBACK (tiny labels)
+ * - Crops bottom portion for human-readable text (faster + better)
+ * - Extracts MAC / Serial / Model from OCR text
+ *************************************************/
+function cleanOcr_(s){
+  return (s||"")
+    .replace(/[|]/g,'I')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function extractFromOcrText_(text){
+  const t = cleanOcr_(text).toUpperCase();
+
+  const mac = (t.match(/([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}/) || [])[0]
+           || (t.match(/\b[0-9A-F]{12}\b/) || [])[0];
+
+  const snTagged = (t.match(/\bSN[:\s]*([A-Z0-9]{8,16})\b/) || []);
+  const serial =
+    snTagged[1] ||
+    (t.match(/\b[A-Z]{3}[A-Z0-9]{7,13}\b/) || [])[0] ||
+    "";
+
+  const model =
+    (t.match(/\bWS-C[0-9A-Z\-]+\b/) || [])[0] ||
+    (t.match(/\b(EX|QFX)\d{3,4}\b/) || [])[0] ||
+    (t.match(/\bAP-\d{3}\b/) || [])[0] ||
+    (t.match(/\bTW-511\b/) || [])[0] ||
+    "";
+
+  return {
+    mac: mac ? formatMac(mac) : "",
+    serial: serial || "",
+    model: model || ""
+  };
+}
+
+function cropCanvasFromVideo_(video){
+  if (!video || !video.videoWidth) throw new Error("Video not ready.");
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+
+  const full = document.createElement("canvas");
+  full.width = vw; full.height = vh;
+  const ctx = full.getContext("2d");
+  ctx.drawImage(video, 0, 0, vw, vh);
+
+  // Crop: bottom-ish band where printed text typically lives
+  const cropX = Math.floor(vw * 0.06);
+  const cropW = Math.floor(vw * 0.88);
+  const cropY = Math.floor(vh * 0.52);
+  const cropH = Math.floor(vh * 0.42);
+
+  const crop = document.createElement("canvas");
+  crop.width = cropW; crop.height = cropH;
+  const cctx = crop.getContext("2d");
+  cctx.drawImage(full, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+  // Slight contrast boost (cheap, helps on gray labels)
+  const img = cctx.getImageData(0,0,cropW,cropH);
+  const d = img.data;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i], g=d[i+1], b=d[i+2];
+    const y = (0.299*r + 0.587*g + 0.114*b);
+    const v = y > 140 ? 255 : (y < 90 ? 0 : y); // threshold-ish
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  cctx.putImageData(img,0,0);
+
+  return crop;
+}
+
+async function runOCRFallback(mode){
+  if (ocrBusy) return;
+  ocrBusy = true;
+  try{
+    setStatus(mode === "auto" ? "Tiny label — reading text…" : "OCR reading… hold steady.", "warn");
+
+    const video = el("video");
+    const crop = cropCanvasFromVideo_(video);
+
+    const { data } = await Tesseract.recognize(
+      crop,
+      "eng",
+      {
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:-./ ",
+        preserve_interword_spaces: "1"
+      }
+    );
+
+    const text = cleanOcr_(data.text || "");
+    if (!text){
+      setStatus("OCR found nothing — move closer / better light.", "warn");
+      return;
+    }
+
+    const ex = extractFromOcrText_(text);
+
+    // Apply detected model/make/type
+    if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
+    if (ex.model) applyAutoDetect_(ex.model);
+
+    // Now stage fill rules
+    if (scanStage === "id"){
+      if (ex.mac && !el('mac').value.trim()) el('mac').value = ex.mac;
+      if (!el('mac').value.trim() && ex.serial && !el('serial').value.trim()) el('serial').value = ex.serial;
+
+      if (el('mac').value.trim() || el('serial').value.trim()){
+        scanStage = "asset";
+        stageHint_();
+        beep_();
+        setStatus("Captured via OCR — now scan Asset Tag.", "ok");
+      } else {
+        setStatus("OCR read text but no MAC/Serial matched.", "warn");
+      }
+    } else {
+      // asset stage: OCR can still help if it sees an asset label (numbers)
+      // but we only fill assetTag if it's empty and looks like a tag (>=4 chars)
+      const maybeTag = (text.match(/\b[A-Z0-9\-]{4,}\b/) || [])[0] || "";
+      if (!el('assetTag').value.trim() && maybeTag) {
+        el('assetTag').value = maybeTag;
+        beep_();
+        setStatus("Asset Tag captured via OCR — ready to submit.", "ok");
+      } else {
+        setStatus("OCR complete — review fields.", "ok");
+      }
+    }
+
+    populateModelPickers();
+    updateSubmitEnabled();
+    debouncedDupeCheck();
+
+  }catch(e){
+    setStatus("OCR error: " + (e.message || e), "bad");
+  }finally{
+    ocrBusy = false;
+  }
+}
+
+/*************************************************
+ * HANDLE DECODED TEXT (barcode/QR)
+ *************************************************/
+function handleDecodedText_(text, source){
+  const raw = norm_(text);
+  el('techHint').textContent = `Last input: ${source} → ${raw}`;
+
+  // Autodetect make/model/type on any scan
+  applyAutoDetect_(raw);
+
+  if (scanStage === "id"){
+    if (looksLikeMac(raw)){
+      el('mac').value = formatMac(raw);
+      setStatus("MAC captured — now scan Asset Tag.", "ok");
+      beep_();
+      scanStage = "asset";
+    } else {
+      // If they scanned something that looks like a model (WS-C...), do NOT put it in serial
+      const m = detectModelFromText_(raw);
+      if (m){
+        if (!el('model').value.trim()) el('model').value = m;
+        setStatus("Model detected — now scan Serial/MAC.", "warn");
+        beep_();
+      } else {
+        el('serial').value = raw;
+        setStatus("Serial captured — now scan Asset Tag.", "ok");
+        beep_();
+        scanStage = "asset";
+      }
+    }
+  } else {
+    el('assetTag').value = raw;
+    setStatus("Asset Tag captured — ready to submit.", "ok");
+    beep_();
+  }
+
+  stageHint_();
+  updateSubmitEnabled();
+  debouncedDupeCheck();
+}
+
+/*************************************************
+ * TORCH (Flashlight)
+ *************************************************/
+let torchOn = false;
+
+async function toggleTorch(){
+  const video = el('video');
+  const stream = video && video.srcObject ? video.srcObject : null;
+  if (!stream){
+    setStatus("Flashlight: camera not running yet.", "warn");
+    return;
+  }
+  const track = stream.getVideoTracks()[0];
+  if (!track) return;
+
+  const caps = track.getCapabilities ? track.getCapabilities() : null;
+  if (!caps || !caps.torch){
+    setStatus("Flashlight not supported on this device/browser.", "warn");
+    return;
+  }
+
+  torchOn = !torchOn;
+  try{
+    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+    setStatus(torchOn ? "Flashlight ON" : "Flashlight OFF", "ok");
+  }catch(e){
+    torchOn = false;
+    setStatus("Flashlight error: " + (e.message || e), "warn");
+  }
+}
+
+/*************************************************
+ * SUBMIT + RESET
  *************************************************/
 async function submit(){
-  // normalize MAC before submit
+  // normalize MAC
   const macVal = el('mac').value.trim();
   if (looksLikeMac(macVal)) el('mac').value = formatMac(macVal);
 
@@ -599,15 +795,16 @@ async function submit(){
     model: el('model').value.trim(),
     serial: el('serial').value.trim(),
     mac: el('mac').value.trim(),
-    assetTag: el('assetTag').value.trim(),
+    assetTag: el('assetTag').value.trim()
   };
 
   try{
     setStatus("Saving…", "warn");
     const res = await apiSubmit(payload);
     setStatus(res.message + " — next device.", "ok");
+    beep_();
 
-    // Reset for next device: Serial/MAC first step
+    // reset for next device
     el('serial').value="";
     el('mac').value="";
     el('assetTag').value="";
@@ -617,6 +814,7 @@ async function submit(){
     dupeState={ ok:true, issues:[] };
     showDupe([]);
     updateSubmitEnabled();
+
   }catch(err){
     setStatus(err.message || String(err), "bad");
     debouncedDupeCheck();
@@ -624,7 +822,7 @@ async function submit(){
 }
 
 /*************************************************
- * Events
+ * EVENTS
  *************************************************/
 el('deviceType').addEventListener('change', ()=>{ populateModelPickers(); updateSubmitEnabled(); });
 el('make').addEventListener('change', ()=>{ populateModelPickers(); updateSubmitEnabled(); });
@@ -647,6 +845,8 @@ el('model').addEventListener('blur', ()=>{ learnModelIfNew_(); updateSubmitEnabl
 el('startBtn').addEventListener('click', ()=>startScan());
 el('stopBtn').addEventListener('click', ()=>stopScan());
 el('submitBtn').addEventListener('click', ()=>submit());
+el('torchBtn').addEventListener('click', ()=>toggleTorch());
+el('ocrBtn').addEventListener('click', async ()=>{ await runOCRFallback("manual"); });
 
 window.addEventListener('load', ()=>{
   lockIfNoKey_();
@@ -657,6 +857,5 @@ window.addEventListener('load', ()=>{
   if (ACCESS_KEY) setStatus("Tap START SCANNING.", "");
 });
 </script>
-
 </body>
 </html>
