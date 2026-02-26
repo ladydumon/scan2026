@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Network Asset Scan</title>
+
+  <style>
+    :root { --bg:#0b1220; --card:#111a2c; --text:#e5e7eb; --muted:#9ca3af; --accent:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
+    body { font-family: Arial, sans-serif; padding: 12px; margin: 0; background: var(--bg); color: var(--text); }
+    h1 { font-size: 18px; margin: 0 0 6px 0; }
+    .sub { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+    .card { background: var(--card); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px; }
+    #reader { width: 100%; max-width: 420px; margin: 10px auto; }
+    .field { margin: 10px 0; }
+    label { display:block; font-size: 12px; margin-bottom: 4px; color: var(--muted); }
+    input, select, button {
+      width: 100%;
+      padding: 12px;
+      font-size: 15px;
+      box-sizing: border-box;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.15);
+      color: var(--text);
+    }
+    input::placeholder { color: rgba(229,231,235,0.35); }
+    .row { display:flex; gap:10px; }
+    .row > div { flex:1; }
+    .btn { border: none; cursor: pointer; }
+    .btnPrimary { background: var(--accent); color: #06210f; font-weight: 700; }
+    .btnSecondary { background: rgba(255,255,255,0.08); color: var(--text); font-weight: 600; }
+    .btnDanger { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.5); color: #fecaca; font-weight: 700; }
+    .btnTiny { padding: 10px; font-size: 13px; border-radius: 12px; }
+    .big { padding: 14px; font-size: 16px; }
+    .pillRow { display:flex; gap:10px; align-items:center; margin: 10px 0 0; }
+    .pillRow input { width:auto; transform: scale(1.1); }
+    .msg { margin-top: 10px; font-size: 13px; }
+    .ok { color: #86efac; }
+    .warn { color: #fcd34d; }
+    .bad { color: #fca5a5; }
+    .dupeBox { margin-top:10px; padding:10px; border-radius: 12px; background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.35); display:none; }
+    .dupeBox.bad { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.35); }
+    .dupeTitle { font-weight: 700; margin-bottom: 6px; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .lock { opacity: 0.35; pointer-events: none; filter: grayscale(0.5); }
+  </style>
+
+  <!-- html5-qrcode -->
+  <script src="https://unpkg.com/html5-qrcode" defer></script>
+</head>
+
+<body>
+  <h1>Network Asset Scan</h1>
+  <div class="sub">
+    Auto-route scans (MAC→MAC, Cisco/Juniper-ish serial→Serial). Learns models + recents + “same model as last.”
+  </div>
+
+  <div id="app" class="card">
+    <div class="pillRow" style="margin-top:0;">
+      <input type="checkbox" id="scanNext" checked>
+      <label for="scanNext" style="margin:0; color: var(--text);">Scan Next (Serial → MAC → Asset)</label>
+    </div>
+
+    <div class="pillRow" style="margin-top:8px;">
+      <input type="checkbox" id="soundOn" checked>
+      <label for="soundOn" style="margin:0; color: var(--text);">Beep/Vibrate on scan</label>
+    </div>
+
+    <div class="pillRow" style="margin-top:8px;">
+      <input type="checkbox" id="autoRoute" checked>
+      <label for="autoRoute" style="margin:0; color: var(--text);">Auto-route scans (recommended)</label>
+    </div>
+
+    <div id="reader"></div>
+
+    <div class="row">
+      <div class="field">
+        <label for="deviceType">Device Type *</label>
+        <select id="deviceType" required>
+          <option value="">-- Select --</option>
+          <option value="Switch">Switch</option>
+          <option value="AP">AP</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="make">Make *</label>
+        <select id="make" required>
+          <option value="">-- Select --</option>
+          <option value="Cisco">Cisco</option>
+          <option value="Juniper">Juniper</option>
+          <option value="Aruba">Aruba</option>
+          <option value="Fortinet">Fortinet</option>
+          <option value="Ruckus">Ruckus</option>
+          <option value="Ubiquiti">Ubiquiti</option>
+          <option value="TP-Link">TP-Link</option>
+          <option value="Netgear">Netgear</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="modelPick">Model suggestions (by Device Type)</label>
+        <select id="modelPick">
+          <option value="">-- Select a model to auto-fill (or type below) --</option>
+        </select>
+        <div class="hint" id="modelHint"></div>
+      </div>
+      <div class="field">
+        <label for="recentPick">Recent models (last 10)</label>
+        <select id="recentPick">
+          <option value="">-- Recent models --</option>
+        </select>
+        <div class="hint">Remembered per Device Type + Make.</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="model">Model *</label>
+        <input type="text" id="model" placeholder="Type model or select from suggestions">
+      </div>
+      <div class="field" style="display:flex; align-items:flex-end; gap:10px;">
+        <button id="sameModelBtn" class="btn btnSecondary btnTiny" type="button">Same model as last</button>
+        <button id="unknownModelBtn" class="btn btnSecondary btnTiny" type="button">Unknown / Other model</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="serial">Serial (Serial OR MAC required)</label>
+      <div class="row">
+        <div><input type="text" id="serial" placeholder="Scan or type serial"></div>
+        <div><button class="btn btnSecondary" id="scanSerialBtn" type="button">Scan Serial</button></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="mac">MAC (Serial OR MAC required)</label>
+      <div class="row">
+        <div><input type="text" id="mac" placeholder="Scan or type MAC (auto-formats)"></div>
+        <div><button class="btn btnSecondary" id="scanMacBtn" type="button">Scan MAC</button></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="assetTag">Company Asset Tag *</label>
+      <div class="row">
+        <div><input type="text" id="assetTag" placeholder="Scan or type asset tag"></div>
+        <div><button class="btn btnSecondary" id="scanAssetBtn" type="button">Scan Asset</button></div>
+      </div>
+    </div>
+
+    <button id="scanNextDeviceBtn" class="btn btnPrimary big" type="button">SCAN NEXT DEVICE</button>
+    <button id="submitBtn" class="btn btnPrimary big" disabled type="button" style="margin-top:10px;">SUBMIT TO SHEET</button>
+    <button id="stopCamBtn" class="btn btnDanger" type="button" style="margin-top:10px; display:none;">STOP CAMERA</button>
+
+    <div id="dupeBox" class="dupeBox">
+      <div class="dupeTitle">Heads up:</div>
+      <div id="dupeList" style="font-size:13px;"></div>
+    </div>
+
+    <div id="status" class="msg"></div>
+  </div>
+
+<script>
+  /*************************************************
+   * CONFIG — SET THIS ONCE
+   *************************************************/
+  const API_BASE = "https://script.google.com/macros/s/AKfycbwlpaGqxw08bZ7jC2uxjWbOUq5Ru3SRrXHdPyTZcBq39y7vZm5nGsNjzP2LZJQTj_qUNw/exec";
+
+  // Key comes from THIS page URL, e.g.:
+  // https://yourhost/index.html?k=FIT-SCAN-2026
+  const ACCESS_KEY = new URLSearchParams(location.search).get("k") || "";
+
+  function el(id){ return document.getElementById(id); }
+
+  function lockIfNoKey_(){
+    if (ACCESS_KEY) return;
+    el('status').textContent = "Missing access key. Use the external link with ?k=YOURKEY";
+    el('status').className = "msg bad";
+    el('app').classList.add('lock');
+  }
+
+  /*************************************************
+   * API CALLS
+   *************************************************/
+  async function apiCheckDuplicates(serial, mac, assetTag){
+    const url = new URL(API_BASE);
+    url.searchParams.set("action","checkDuplicates");
+    url.searchParams.set("k", ACCESS_KEY);
+    url.searchParams.set("serial", serial || "");
+    url.searchParams.set("mac", mac || "");
+    url.searchParams.set("assetTag", assetTag || "");
+
+    const res = await fetch(url.toString(), { method:"GET", cache:"no-store" });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || "Duplicate check failed");
+    return j.result;
+  }
+
+  async function apiSubmit(payload){
+    const body = new URLSearchParams();
+    body.set("action","submit");
+    body.set("k", ACCESS_KEY);
+    body.set("deviceType", payload.deviceType || "");
+    body.set("make", payload.make || "");
+    body.set("model", payload.model || "");
+    body.set("serial", payload.serial || "");
+    body.set("mac", payload.mac || "");
+    body.set("assetTag", payload.assetTag || "");
+
+    const res = await fetch(API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: body.toString()
+    });
+
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || "Submit failed");
+    return j;
+  }
+
+  /*************************************************
+   * MODEL SUGGESTIONS + MEMORY (same as before)
+   *************************************************/
+  const BASE_MODELS = {
+    "Cisco":   { "Switch":["Catalyst 9200","Catalyst 9300","Catalyst 9500","Catalyst 2960","Catalyst 3650","Catalyst 3850","Nexus 3K","Nexus 9K"],
+                "AP":["Aironet 2800","Aironet 3800","Catalyst 9115","Catalyst 9120","Catalyst 9130"], "Other":[] },
+    "Juniper": { "Switch":["EX2300","EX3400","EX4300","EX4400","QFX5100","QFX5120"], "AP":[], "Other":[] },
+    "Aruba":   { "Switch":["2930F","2930M","3810M","CX 6100","CX 6200","CX 6300","CX 6400"],
+                "AP":["AP-505","AP-515","AP-535","AP-555","AP-635"], "Other":[] },
+    "Fortinet":{ "Switch":["FortiSwitch 108F","FortiSwitch 124F","FortiSwitch 248E"], "AP":["FortiAP 231F","FortiAP 431F"], "Other":[] },
+    "Ruckus":  { "Switch":["ICX 7150","ICX 7250","ICX 7450"], "AP":["R510","R610","R650","R750"], "Other":[] },
+    "Ubiquiti":{ "Switch":["USW-24-PoE","USW-Pro-24-PoE","USW-48-PoE","USW-Pro-48-PoE","USW-Enterprise-24-PoE","USW-Aggregation"],
+                "AP":["U6-Lite","U6-LR","U6-Pro","U6-Enterprise","U6-Mesh","U7-Pro"], "Other":[] },
+    "TP-Link": { "Switch":["TL-SG2008P","TL-SG2210P"], "AP":["Omada EAP610","Omada EAP650"], "Other":[] },
+    "Netgear": { "Switch":["GS108","GS110TP","M4300"], "AP":["WAX610","WAX630"], "Other":[] },
+    "Other":   { "Switch":[], "AP":[], "Other":[] }
+  };
+
+  const LS_PREFS = "scan2_last_type_make_v3";
+  const LS_CUSTOM_MODELS = "scan2_custom_models_v1";
+  const LS_RECENTS = "scan2_recent_models_v1";
+  const LS_LAST_MODEL = "scan2_last_model_by_make_type_v1";
+
+  function getDeviceType(){ return el('deviceType').value || "Other"; }
+  function getMake(){ return el('make').value || "Other"; }
+
+  function savePrefs(){
+    localStorage.setItem(LS_PREFS, JSON.stringify({ deviceType: el('deviceType').value, make: el('make').value }));
+  }
+  function loadPrefs(){
+    try{
+      const raw=localStorage.getItem(LS_PREFS);
+      if(!raw) return;
+      const p=JSON.parse(raw);
+      if(p.deviceType) el('deviceType').value=p.deviceType;
+      if(p.make) el('make').value=p.make;
+    }catch{}
+  }
+
+  function loadJSON_(k){ try { return JSON.parse(localStorage.getItem(k)||"{}"); } catch { return {}; } }
+  function saveJSON_(k, v){ localStorage.setItem(k, JSON.stringify(v||{})); }
+
+  function addCustomModel(make, type, model){
+    const m=(model||"").trim(); if(!m) return;
+    const obj=loadJSON_(LS_CUSTOM_MODELS);
+    obj[make]=obj[make]||{}; obj[make][type]=obj[make][type]||[];
+    obj[make][type]=obj[make][type].filter(x=>x.toLowerCase()!==m.toLowerCase());
+    obj[make][type].unshift(m);
+    if(obj[make][type].length>30) obj[make][type]=obj[make][type].slice(0,30);
+    saveJSON_(LS_CUSTOM_MODELS, obj);
+  }
+
+  function addRecentModel(make, type, model){
+    const m=(model||"").trim(); if(!m) return;
+    const obj=loadJSON_(LS_RECENTS);
+    obj[make]=obj[make]||{}; obj[make][type]=obj[make][type]||[];
+    obj[make][type]=obj[make][type].filter(x=>x.toLowerCase()!==m.toLowerCase());
+    obj[make][type].unshift(m);
+    if(obj[make][type].length>10) obj[make][type]=obj[make][type].slice(0,10);
+    saveJSON_(LS_RECENTS, obj);
+  }
+
+  function setLastModel(make, type, model){
+    const m=(model||"").trim(); if(!m) return;
+    const obj=loadJSON_(LS_LAST_MODEL);
+    obj[make]=obj[make]||{}; obj[make][type]=m;
+    saveJSON_(LS_LAST_MODEL, obj);
+  }
+
+  function getLastModel(make, type){
+    const obj=loadJSON_(LS_LAST_MODEL);
+    return (obj[make] && obj[make][type]) ? obj[make][type] : "";
+  }
+
+  function updateSameModelButton(){
+    const last=getLastModel(getMake(), getDeviceType());
+    const btn=el('sameModelBtn');
+    btn.disabled=!last;
+    btn.textContent=last ? `Same model: ${last}` : "Same model as last";
+  }
+
+  function buildModelList(make, type){
+    const base=(BASE_MODELS[make] && BASE_MODELS[make][type]) ? BASE_MODELS[make][type] : [];
+    const custom=loadJSON_(LS_CUSTOM_MODELS);
+    const learned=(custom[make] && custom[make][type]) ? custom[make][type] : [];
+    const merged=[...learned, ...base];
+    const seen=new Set();
+    return merged.filter(x=>{
+      const k=x.toLowerCase();
+      if(seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+  }
+
+  function populateModelPickers(){
+    const make=getMake(), type=getDeviceType();
+
+    const models=buildModelList(make, type);
+    const pick=el('modelPick');
+    pick.innerHTML=`<option value="">-- Select a model to auto-fill (or type below) --</option>`;
+    models.forEach(m=>{
+      const o=document.createElement('option');
+      o.value=m; o.textContent=m;
+      pick.appendChild(o);
+    });
+
+    const rec=loadJSON_(LS_RECENTS);
+    const recList=(rec[make] && rec[make][type]) ? rec[make][type] : [];
+    const rp=el('recentPick');
+    rp.innerHTML=`<option value="">-- Recent models --</option>`;
+    recList.forEach(m=>{
+      const o=document.createElement('option');
+      o.value=m; o.textContent=m;
+      rp.appendChild(o);
+    });
+
+    el('modelHint').textContent=`Showing ${type} models for ${make}.`;
+    updateSameModelButton();
+  }
+
+  function learnIfNewModel(){
+    const make=getMake(), type=getDeviceType();
+    const model=el('model').value.trim();
+    if(!model) return;
+    const list=buildModelList(make, type).map(x=>x.toLowerCase());
+    if(!list.includes(model.toLowerCase())) addCustomModel(make, type, model);
+    addRecentModel(make, type, model);
+    setLastModel(make, type, model);
+    populateModelPickers();
+  }
+
+  /*************************************************
+   * AUTO-ROUTE (same as before)
+   *************************************************/
+  function looksLikeMac(s){
+    const hex=(s||'').toUpperCase().replace(/[^0-9A-F]/g,'');
+    return hex.length===12;
+  }
+  function formatMac(s){
+    const hex=(s||'').toUpperCase().replace(/[^0-9A-F]/g,'');
+    if(hex.length!==12) return (s||'').trim();
+    return hex.match(/.{1,2}/g).join(':');
+  }
+  function looksLikeCiscoJuniperSerial(raw){
+    const s=(raw||"").toString().trim();
+    if(!s) return false;
+    if(looksLikeMac(s)) return false;
+    const cleaned=s.replace(/\s+/g,'');
+    if(cleaned.length<6 || cleaned.length>24) return false;
+    const alnum=cleaned.replace(/[^A-Za-z0-9]/g,'');
+    if(alnum.length<6) return false;
+    const hasLetter=/[A-Za-z]/.test(alnum);
+    const hasDigit=/[0-9]/.test(alnum);
+    return hasLetter && hasDigit;
+  }
+  function autoRouteTarget(decodedText){
+    const raw=(decodedText||"").trim();
+    const make=getMake();
+    if(looksLikeMac(raw)) return 'mac';
+    const isCJ=(make==="Cisco" || make==="Juniper");
+    if(isCJ && looksLikeCiscoJuniperSerial(raw)) return 'serial';
+    if(!el('serial').value.trim()) return 'serial';
+    if(!el('mac').value.trim()) return 'mac';
+    return 'assetTag';
+  }
+
+  /*************************************************
+   * SCANNER + DUPES
+   *************************************************/
+  let html5QrCode=null;
+  let cameraRunning=false;
+  let scanTarget=null;
+  let lastScanAt=0;
+  let dupeTimer=null;
+  let dupeState={ ok:true, issues:[] };
+
+  function setStatus(msg, cls){
+    const s=el('status');
+    s.textContent=msg||"";
+    s.className="msg "+(cls||"");
+  }
+
+  function showDupe(issues){
+    const box=el('dupeBox');
+    const list=el('dupeList');
+    if(!issues || issues.length===0){
+      box.style.display="none"; list.innerHTML=""; box.classList.remove("bad"); return;
+    }
+    const isAsset=issues.some(x=>x.field==='assetTag');
+    box.style.display="block";
+    box.classList.toggle("bad", isAsset);
+    list.innerHTML=issues.map(i=>`• ${i.message}`).join("<br>");
+  }
+
+  function buzz(){
+    if(!el('soundOn').checked) return;
+    try{ if(navigator.vibrate) navigator.vibrate(60); }catch{}
+    try{
+      const ctx=new (window.AudioContext||window.webkitAudioContext)();
+      const o=ctx.createOscillator();
+      const g=ctx.createGain();
+      o.type="sine"; o.frequency.value=880; g.gain.value=0.08;
+      o.connect(g); g.connect(ctx.destination);
+      o.start(); setTimeout(()=>{o.stop(); ctx.close();}, 90);
+    }catch{}
+  }
+
+  async function startScanner(){
+    if(cameraRunning) return;
+    cameraRunning=true;
+    el('stopCamBtn').style.display="block";
+    if(!html5QrCode) html5QrCode=new Html5Qrcode("reader");
+
+    const formats=[
+      Html5QrcodeSupportedFormats.QR_CODE,
+      Html5QrcodeSupportedFormats.CODE_128,
+      Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A,
+      Html5QrcodeSupportedFormats.UPC_E
+    ];
+    const config={ fps:15, qrbox:260, formatsToSupport:formats };
+
+    try{
+      await html5QrCode.start(
+        { facingMode:"environment" },
+        config,
+        (decodedText)=>onScan(decodedText),
+        ()=>{}
+      );
+      setStatus("Camera ready — scan now.", "warn");
+    }catch(err){
+      console.error(err);
+      setStatus("Camera wouldn’t start. (External host should fix this.)", "bad");
+      cameraRunning=false;
+      el('stopCamBtn').style.display="none";
+    }
+  }
+
+  async function stopScanner(){
+    if(!html5QrCode || !cameraRunning) return;
+    try{ await html5QrCode.stop(); }catch(e){}
+    cameraRunning=false;
+    el('stopCamBtn').style.display="none";
+  }
+
+  function onScan(decodedText){
+    const now=Date.now();
+    if(now-lastScanAt<700) return;
+    lastScanAt=now;
+
+    const raw=(decodedText||"").trim();
+    if(!raw) return;
+
+    if(el('autoRoute').checked){
+      scanTarget=autoRouteTarget(raw);
+    }
+    if(!scanTarget) return;
+
+    if(scanTarget==='mac'){
+      el('mac').value = looksLikeMac(raw) ? formatMac(raw) : raw;
+      setStatus("MAC captured.", "ok");
+    }else if(scanTarget==='serial'){
+      el('serial').value = raw;
+      setStatus("Serial captured.", "ok");
+    }else{
+      el('assetTag').value = raw;
+      setStatus("Asset Tag captured.", "ok");
+    }
+
+    buzz();
+    updateSubmitEnabled();
+    debouncedDupeCheck();
+
+    if(el('scanNext').checked){
+      if(scanTarget==='serial') scanTarget='mac';
+      else if(scanTarget==='mac') scanTarget='assetTag';
+      else stopScanner();
+    }else{
+      stopScanner();
+    }
+  }
+
+  function debouncedDupeCheck(){
+    if(dupeTimer) clearTimeout(dupeTimer);
+    dupeTimer=setTimeout(runDupeCheck, 350);
+  }
+
+  async function runDupeCheck(){
+    try{
+      const serial=el('serial').value.trim();
+      const mac=el('mac').value.trim();
+      const assetTag=el('assetTag').value.trim();
+
+      if(!serial && !mac && !assetTag){
+        dupeState={ ok:true, issues:[] };
+        showDupe([]);
+        updateSubmitEnabled();
+        return;
+      }
+
+      const result = await apiCheckDuplicates(serial, mac, assetTag);
+      dupeState = result || { ok:true, issues:[] };
+      showDupe(dupeState.issues||[]);
+      updateSubmitEnabled();
+    }catch(err){
+      console.error(err);
+      // If API call fails, don't hard-block scanning — just warn
+      setStatus("Dup check failed (network). You can still submit.", "warn");
+      dupeState={ ok:true, issues:[] };
+      showDupe([]);
+      updateSubmitEnabled();
+    }
+  }
+
+  function updateSubmitEnabled(){
+    const deviceType=el('deviceType').value.trim();
+    const make=el('make').value.trim();
+    const model=el('model').value.trim();
+    const serial=el('serial').value.trim();
+    const mac=el('mac').value.trim();
+    const assetTag=el('assetTag').value.trim();
+
+    const hasSerialOrMac=!!(serial||mac);
+    const requiredOK=deviceType && make && model && assetTag && hasSerialOrMac;
+    const noDupes=(dupeState && dupeState.ok);
+
+    el('submitBtn').disabled=!(requiredOK && noDupes);
+  }
+
+  function clearScanFields(){
+    el('modelPick').value='';
+    el('recentPick').value='';
+    el('model').value='';
+    el('serial').value='';
+    el('mac').value='';
+    el('assetTag').value='';
+    showDupe([]);
+    dupeState={ ok:true, issues:[] };
+    updateSubmitEnabled();
+  }
+
+  /*************************************************
+   * EVENTS
+   *************************************************/
+  el('deviceType').addEventListener('change', ()=>{ savePrefs(); populateModelPickers(); updateSubmitEnabled(); });
+  el('make').addEventListener('change', ()=>{ savePrefs(); populateModelPickers(); updateSubmitEnabled(); });
+
+  el('modelPick').addEventListener('change', ()=>{ const v=el('modelPick').value; if(v) el('model').value=v; updateSubmitEnabled(); });
+  el('recentPick').addEventListener('change', ()=>{ const v=el('recentPick').value; if(v) el('model').value=v; updateSubmitEnabled(); });
+
+  el('sameModelBtn').addEventListener('click', ()=>{
+    const last=getLastModel(getMake(), getDeviceType());
+    if(last){ el('model').value=last; updateSubmitEnabled(); }
+  });
+
+  el('unknownModelBtn').addEventListener('click', ()=> el('model').focus());
+
+  el('scanSerialBtn').addEventListener('click', async ()=>{ scanTarget='serial'; setStatus("Scanning Serial…","warn"); await startScanner(); });
+  el('scanMacBtn').addEventListener('click', async ()=>{ scanTarget='mac'; setStatus("Scanning MAC…","warn"); await startScanner(); });
+  el('scanAssetBtn').addEventListener('click', async ()=>{ scanTarget='assetTag'; setStatus("Scanning Asset Tag…","warn"); await startScanner(); });
+
+  el('scanNextDeviceBtn').addEventListener('click', async ()=>{
+    clearScanFields();
+    populateModelPickers();
+    scanTarget='serial';
+    setStatus("Scan Serial to begin…", "warn");
+    await startScanner();
+  });
+
+  el('stopCamBtn').addEventListener('click', ()=>{ stopScanner(); setStatus("Camera stopped.", ""); });
+
+  el('mac').addEventListener('blur', ()=>{
+    const v=el('mac').value.trim();
+    if(looksLikeMac(v)) el('mac').value=formatMac(v);
+    updateSubmitEnabled(); debouncedDupeCheck();
+  });
+
+  ['model','serial','assetTag'].forEach(id=>{
+    el(id).addEventListener('input', ()=>{ updateSubmitEnabled(); debouncedDupeCheck(); });
+  });
+  el('mac').addEventListener('input', ()=>{ updateSubmitEnabled(); debouncedDupeCheck(); });
+
+  el('model').addEventListener('blur', ()=>{ learnIfNewModel(); updateSubmitEnabled(); });
+
+  el('submitBtn').addEventListener('click', async ()=>{
+    if (!ACCESS_KEY) return;
+
+    const macVal=el('mac').value.trim();
+    if(looksLikeMac(macVal)) el('mac').value=formatMac(macVal);
+
+    learnIfNewModel();
+
+    const payload={
+      deviceType: el('deviceType').value.trim(),
+      make: el('make').value.trim(),
+      model: el('model').value.trim(),
+      serial: el('serial').value.trim(),
+      mac: el('mac').value.trim(),
+      assetTag: el('assetTag').value.trim(),
+    };
+
+    try{
+      setStatus("Saving…", "warn");
+      const res = await apiSubmit(payload);
+      setStatus(res.message + " — next one.", "ok");
+      clearScanFields();
+      populateModelPickers();
+      scanTarget='serial';
+      // don’t auto-start camera here; you already like button-driven flow
+    }catch(err){
+      console.error(err);
+      setStatus(err.message || String(err), "bad");
+      debouncedDupeCheck();
+    }
+  });
+
+  window.addEventListener('load', ()=>{
+    loadPrefs();
+    populateModelPickers();
+    updateSubmitEnabled();
+    lockIfNoKey_();
+    if (ACCESS_KEY) setStatus("Tap SCAN NEXT DEVICE to start.", "");
+  });
+</script>
+
+</body>
+</html>
