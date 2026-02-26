@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <base target="_top">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Network Asset Scan</title>
+
   <style>
     :root { --bg:#0b1220; --card:#111a2c; --text:#e5e7eb; --muted:#9ca3af; --accent:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
     body { font-family: Arial, sans-serif; padding: 12px; margin: 0; background: var(--bg); color: var(--text); }
@@ -44,6 +45,7 @@
     .lock { opacity: 0.35; pointer-events: none; filter: grayscale(0.5); }
   </style>
 
+  <!-- html5-qrcode -->
   <script src="https://unpkg.com/html5-qrcode" defer></script>
 </head>
 
@@ -163,19 +165,66 @@
   </div>
 
 <script>
-  /************* ACCESS KEY FROM URL *************/
- const ACCESS_KEY = "FIT-SCAN-2026";
+  /*************************************************
+   * CONFIG — SET THIS ONCE
+   *************************************************/
+  const API_BASE = "https://script.google.com/macros/s/AKfycbwlpaGqxw08bZ7jC2uxjWbOUq5Ru3SRrXHdPyTZcBq39y7vZm5nGsNjzP2LZJQTj_qUNw/exec";
+
+  // Key comes from THIS page URL, e.g.:
+  // https://yourhost/index.html?k=FIT-SCAN-2026
+  const ACCESS_KEY = new URLSearchParams(location.search).get("k") || "";
 
   function el(id){ return document.getElementById(id); }
 
   function lockIfNoKey_(){
     if (ACCESS_KEY) return;
-    el('status').textContent = "Missing access key. Use the link with ?k=YOURKEY";
+    el('status').textContent = "Missing access key. Use the external link with ?k=YOURKEY";
     el('status').className = "msg bad";
     el('app').classList.add('lock');
   }
 
-  // Base model lists split by DeviceType
+  /*************************************************
+   * API CALLS
+   *************************************************/
+  async function apiCheckDuplicates(serial, mac, assetTag){
+    const url = new URL(API_BASE);
+    url.searchParams.set("action","checkDuplicates");
+    url.searchParams.set("k", ACCESS_KEY);
+    url.searchParams.set("serial", serial || "");
+    url.searchParams.set("mac", mac || "");
+    url.searchParams.set("assetTag", assetTag || "");
+
+    const res = await fetch(url.toString(), { method:"GET", cache:"no-store" });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || "Duplicate check failed");
+    return j.result;
+  }
+
+  async function apiSubmit(payload){
+    const body = new URLSearchParams();
+    body.set("action","submit");
+    body.set("k", ACCESS_KEY);
+    body.set("deviceType", payload.deviceType || "");
+    body.set("make", payload.make || "");
+    body.set("model", payload.model || "");
+    body.set("serial", payload.serial || "");
+    body.set("mac", payload.mac || "");
+    body.set("assetTag", payload.assetTag || "");
+
+    const res = await fetch(API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: body.toString()
+    });
+
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || "Submit failed");
+    return j;
+  }
+
+  /*************************************************
+   * MODEL SUGGESTIONS + MEMORY (same as before)
+   *************************************************/
   const BASE_MODELS = {
     "Cisco":   { "Switch":["Catalyst 9200","Catalyst 9300","Catalyst 9500","Catalyst 2960","Catalyst 3650","Catalyst 3850","Nexus 3K","Nexus 9K"],
                 "AP":["Aironet 2800","Aironet 3800","Catalyst 9115","Catalyst 9120","Catalyst 9130"], "Other":[] },
@@ -304,7 +353,9 @@
     populateModelPickers();
   }
 
-  // Auto-route detection
+  /*************************************************
+   * AUTO-ROUTE (same as before)
+   *************************************************/
   function looksLikeMac(s){
     const hex=(s||'').toUpperCase().replace(/[^0-9A-F]/g,'');
     return hex.length===12;
@@ -332,13 +383,14 @@
     if(looksLikeMac(raw)) return 'mac';
     const isCJ=(make==="Cisco" || make==="Juniper");
     if(isCJ && looksLikeCiscoJuniperSerial(raw)) return 'serial';
-    // fallback based on empties
     if(!el('serial').value.trim()) return 'serial';
     if(!el('mac').value.trim()) return 'mac';
     return 'assetTag';
   }
 
-  // Scanner + dupes
+  /*************************************************
+   * SCANNER + DUPES
+   *************************************************/
   let html5QrCode=null;
   let cameraRunning=false;
   let scanTarget=null;
@@ -404,7 +456,7 @@
       setStatus("Camera ready — scan now.", "warn");
     }catch(err){
       console.error(err);
-      setStatus("Camera wouldn’t start. Check permissions.", "bad");
+      setStatus("Camera wouldn’t start. (External host should fix this.)", "bad");
       cameraRunning=false;
       el('stopCamBtn').style.display="none";
     }
@@ -445,7 +497,6 @@
     updateSubmitEnabled();
     debouncedDupeCheck();
 
-    // original behavior: stop after assetTag if scanNext is on
     if(el('scanNext').checked){
       if(scanTarget==='serial') scanTarget='mac';
       else if(scanTarget==='mac') scanTarget='assetTag';
@@ -460,31 +511,31 @@
     dupeTimer=setTimeout(runDupeCheck, 350);
   }
 
-  function runDupeCheck(){
-    const serial=el('serial').value.trim();
-    const mac=el('mac').value.trim();
-    const assetTag=el('assetTag').value.trim();
+  async function runDupeCheck(){
+    try{
+      const serial=el('serial').value.trim();
+      const mac=el('mac').value.trim();
+      const assetTag=el('assetTag').value.trim();
 
-    if(!serial && !mac && !assetTag){
-      dupeState={ ok:true, issues:[] };
-      showDupe([]);
-      updateSubmitEnabled();
-      return;
-    }
-
-    google.script.run
-      .withSuccessHandler((res)=>{
-        dupeState=res || { ok:true, issues:[] };
-        showDupe(dupeState.issues||[]);
-        updateSubmitEnabled();
-      })
-      .withFailureHandler((err)=>{
-        console.error(err);
+      if(!serial && !mac && !assetTag){
         dupeState={ ok:true, issues:[] };
         showDupe([]);
         updateSubmitEnabled();
-      })
-      .checkDuplicates({ serial, mac, assetTag, key: ACCESS_KEY });
+        return;
+      }
+
+      const result = await apiCheckDuplicates(serial, mac, assetTag);
+      dupeState = result || { ok:true, issues:[] };
+      showDupe(dupeState.issues||[]);
+      updateSubmitEnabled();
+    }catch(err){
+      console.error(err);
+      // If API call fails, don't hard-block scanning — just warn
+      setStatus("Dup check failed (network). You can still submit.", "warn");
+      dupeState={ ok:true, issues:[] };
+      showDupe([]);
+      updateSubmitEnabled();
+    }
   }
 
   function updateSubmitEnabled(){
@@ -514,7 +565,9 @@
     updateSubmitEnabled();
   }
 
-  // Events
+  /*************************************************
+   * EVENTS
+   *************************************************/
   el('deviceType').addEventListener('change', ()=>{ savePrefs(); populateModelPickers(); updateSubmitEnabled(); });
   el('make').addEventListener('change', ()=>{ savePrefs(); populateModelPickers(); updateSubmitEnabled(); });
 
@@ -555,7 +608,7 @@
 
   el('model').addEventListener('blur', ()=>{ learnIfNewModel(); updateSubmitEnabled(); });
 
-  el('submitBtn').addEventListener('click', ()=>{
+  el('submitBtn').addEventListener('click', async ()=>{
     if (!ACCESS_KEY) return;
 
     const macVal=el('mac').value.trim();
@@ -570,25 +623,21 @@
       serial: el('serial').value.trim(),
       mac: el('mac').value.trim(),
       assetTag: el('assetTag').value.trim(),
-      key: ACCESS_KEY
     };
 
-    setStatus("Saving…", "warn");
-
-    google.script.run
-      .withSuccessHandler((msg)=>{
-        setStatus(msg + " — next one.", "ok");
-        clearScanFields();
-        populateModelPickers();
-        scanTarget='serial';
-        startScanner();
-      })
-      .withFailureHandler((err)=>{
-        console.error(err);
-        setStatus((err && err.message) ? err.message : String(err), "bad");
-        debouncedDupeCheck();
-      })
-      .submitNetworkAsset(payload);
+    try{
+      setStatus("Saving…", "warn");
+      const res = await apiSubmit(payload);
+      setStatus(res.message + " — next one.", "ok");
+      clearScanFields();
+      populateModelPickers();
+      scanTarget='serial';
+      // don’t auto-start camera here; you already like button-driven flow
+    }catch(err){
+      console.error(err);
+      setStatus(err.message || String(err), "bad");
+      debouncedDupeCheck();
+    }
   });
 
   window.addEventListener('load', ()=>{
