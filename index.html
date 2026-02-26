@@ -55,7 +55,8 @@
 <body>
   <h1>Network Asset Scan</h1>
   <div class="sub">
-    <b>Rack Audit Mode:</b> Serial/MAC first → Asset Tag next. Auto barcode scan + automatic OCR fallback for tiny labels.
+    <b>Rack Audit Mode:</b> Serial/MAC first → Asset Tag next (unless “No Asset Tag” is checked).
+    Auto barcode scan + automatic OCR fallback for tiny labels.
     Autodetect Make/Model/Type (best-effort). Model learning + recents + same-as-last.
   </div>
 
@@ -127,8 +128,14 @@
     </div>
 
     <div class="field">
-      <label for="assetTag">Company Asset Tag *</label>
+      <label for="assetTag">Company Asset Tag <span id="assetReqStar">*</span></label>
       <input id="assetTag" type="text" placeholder="Auto-filled from scan (or type)" />
+
+      <label style="display:flex; gap:10px; align-items:center; margin-top:8px; color:var(--muted); font-size:12px;">
+        <input type="checkbox" id="noAssetTag" style="width:auto; padding:0; margin:0;">
+        No Asset Tag (leave blank)
+      </label>
+      <div class="tiny">If checked, you can submit with Serial/MAC only.</div>
     </div>
 
     <div class="field">
@@ -170,6 +177,7 @@ const ACCESS_KEY = new URLSearchParams(location.search).get("k") || "";
 function el(id){ return document.getElementById(id); }
 function setStatus(msg, cls){ const s=el('status'); s.textContent=msg||""; s.className="msg "+(cls||""); }
 function norm_(s){ return (s||"").toString().trim(); }
+function isNoAssetTag_(){ return !!el('noAssetTag')?.checked; }
 
 /*************************************************
  * KEY LOCK
@@ -206,6 +214,8 @@ async function apiSubmit(payload){
   body.set("serial", payload.serial || "");
   body.set("mac", payload.mac || "");
   body.set("assetTag", payload.assetTag || "");
+  body.set("noAssetTag", payload.noAssetTag ? "1" : "0"); // NEW
+
   const res = await fetch(API_BASE, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
@@ -364,7 +374,8 @@ function detectModelFromText_(t){
   const arubaAp = s.match(/\bAP-\d{3}\b/i);
   if (arubaAp) return arubaAp[0].toUpperCase();
 
-  const moto = s.match(/\bTW-511\b/i);
+  // Motorola TW-511 label family
+  const moto = s.match(/\bTW-511\b/i) || s.match(/\bTW-0?511\b/i);
   if (moto) return "TW-511";
 
   return "";
@@ -387,7 +398,8 @@ const OUI_HINTS = {
   "000B86":"Aruba","D89E3F":"Aruba",
   "F09FC2":"Ubiquiti","24A43C":"Ubiquiti",
   "000D58":"Ruckus",
-  "FCA13E":"Fortinet"
+  "FCA13E":"Fortinet",
+  // Motorola often varies; you can add OUIs as you see them
 };
 
 function detectMakeFromMac_(mac){
@@ -423,6 +435,26 @@ function applyAutoDetect_(decodedText){
 
   populateModelPickers();
   updateSubmitEnabled();
+}
+
+/*************************************************
+ * NO ASSET TAG UI
+ *************************************************/
+function applyNoAssetTagUI_(){
+  const noTag = isNoAssetTag_();
+  const a = el('assetTag');
+  const star = el('assetReqStar');
+
+  a.disabled = noTag;
+  a.required = !noTag;
+  if (star) star.textContent = noTag ? "" : "*";
+
+  if (noTag) {
+    a.value = "";
+    if (scanStage === "asset") { scanStage = "id"; stageHint_(); }
+  }
+  updateSubmitEnabled();
+  debouncedDupeCheck();
 }
 
 /*************************************************
@@ -475,7 +507,10 @@ function updateSubmitEnabled(){
   const mac=el('mac').value.trim();
   const assetTag=el('assetTag').value.trim();
   const hasSerialOrMac=!!(serial||mac);
-  const requiredOK=deviceType && make && model && assetTag && hasSerialOrMac;
+
+  const assetOK = isNoAssetTag_() ? true : !!assetTag;
+  const requiredOK=deviceType && make && model && assetOK && hasSerialOrMac;
+
   const noDupes=(dupeState && dupeState.ok);
   el('submitBtn').disabled = !(requiredOK && noDupes);
 }
@@ -492,7 +527,6 @@ function stageHint_(){
 }
 function beep_(){
   try{
-    // short beep using WebAudio
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -528,7 +562,6 @@ async function startScan(){
     const devices = await reader.getVideoInputDevices();
     const back = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[0];
 
-    // Auto OCR fallback if barcode doesn't hit quickly (tiny labels)
     if (ocrTimer) clearTimeout(ocrTimer);
     ocrTimer = setTimeout(async ()=>{
       if (scanning && !ocrBusy) await runOCRFallback("auto");
@@ -540,14 +573,11 @@ async function startScan(){
       (result, err) => {
         if (result?.text){
           if (ocrTimer) clearTimeout(ocrTimer);
-
-          // Stop one cycle so we don't double-fire
           try{ reader.reset(); }catch{}
           scanning = false;
 
           handleDecodedText_(result.text, "barcode");
 
-          // Warehouse-speed restart
           setTimeout(()=>startScan(), 120);
         }
       }
@@ -569,28 +599,69 @@ function stopScan(){
 
 /*************************************************
  * OCR FALLBACK (tiny labels)
- * - Crops bottom portion for human-readable text (faster + better)
- * - Extracts MAC / Serial / Model from OCR text
+ * TUNED: Cisco + Motorola label formats
  *************************************************/
 function cleanOcr_(s){
   return (s||"")
     .replace(/[|]/g,'I')
+    .replace(/[“”]/g,'"')
+    .replace(/[‘’]/g,"'")
     .replace(/\s+/g,' ')
     .trim();
 }
 
+// Strong “known-noise” words to ignore when choosing an asset tag candidate
+const TAG_STOPWORDS = new Set([
+  "SN","S/N","SERIAL","MAC","AC","PID","VID","FCC","ID","MODEL","MADE","TAIWAN",
+  "INPUT","RATING","DATE","MFG","STACK","CISCO","MOTOROLA","TW","WS","CATALYST",
+  "SWITCH","AP","OTHER","US","V04","V0","V"
+].map(x=>x.toUpperCase()));
+
+function isBadTagCandidate_(c){
+  const s = (c||"").toUpperCase();
+  if (!s) return true;
+  if (s.length < 4) return true;
+  if (TAG_STOPWORDS.has(s)) return true;
+  if (/^(MADE|TAIWAN|INPUT|RATING|FCC|MODEL|SERIAL|MAC|PID|VID)$/i.test(s)) return true;
+  // Don’t accidentally treat model/PID as “asset tag”
+  if (/^WS-C/i.test(s)) return true;
+  if (/^TW-0?511/i.test(s)) return true;
+  if (/^FOC/i.test(s)) return true;
+  return false;
+}
+
 function extractFromOcrText_(text){
-  const t = cleanOcr_(text).toUpperCase();
+  const raw = cleanOcr_(text);
+  const t = raw.toUpperCase();
 
-  const mac = (t.match(/([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}/) || [])[0]
-           || (t.match(/\b[0-9A-F]{12}\b/) || [])[0];
-
-  const snTagged = (t.match(/\bSN[:\s]*([A-Z0-9]{8,16})\b/) || []);
-  const serial =
-    snTagged[1] ||
-    (t.match(/\b[A-Z]{3}[A-Z0-9]{7,13}\b/) || [])[0] ||
+  // MAC: prefer "AC:" or "MAC:" labeled formats (Motorola photo)
+  let mac =
+    (t.match(/\b(?:AC|MAC)\s*[:\-]?\s*([0-9A-F]{12})\b/) || [])[1] ||
+    (t.match(/\b([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}\b/) || [])[0] ||
+    (t.match(/\b[0-9A-F]{12}\b/) || [])[0] ||
     "";
 
+  if (mac) mac = formatMac(mac);
+
+  // Cisco Serial: SN: FOC1746V4AN (your photo)
+  // General Cisco-like: 3 letters + 8-10 alnum
+  const ciscoSN =
+    (t.match(/\bSN[:\s]*([A-Z]{3}[A-Z0-9]{7,10})\b/) || [])[1] ||
+    (t.match(/\b(FOC[0-9A-Z]{7,10})\b/) || [])[1] ||
+    "";
+
+  // Motorola Serial: S/N: 14113622401388 (numeric)
+  const motoSN =
+    (t.match(/\bS\/N[:\s]*([0-9]{10,18})\b/) || [])[1] ||
+    (t.match(/\bSN[:\s]*([0-9]{10,18})\b/) || [])[1] ||
+    "";
+
+  const serial =
+    ciscoSN || motoSN ||
+    (t.match(/\b[A-Z]{3}[A-Z0-9]{7,13}\b/) || [])[0] || // fallback
+    "";
+
+  // Cisco PID/Model: PID: WS-C2960S-24TS-L V04 (your photo)
   const model =
     (t.match(/\bWS-C[0-9A-Z\-]+\b/) || [])[0] ||
     (t.match(/\b(EX|QFX)\d{3,4}\b/) || [])[0] ||
@@ -598,11 +669,13 @@ function extractFromOcrText_(text){
     (t.match(/\bTW-511\b/) || [])[0] ||
     "";
 
-  return {
-    mac: mac ? formatMac(mac) : "",
-    serial: serial || "",
-    model: model || ""
-  };
+  // Motorola P/N (helpful for model auto-detect)
+  const partNumber =
+    (t.match(/\bP\/N[:\s]*([A-Z0-9\-]{6,})\b/) || [])[1] ||
+    (t.match(/\bTW-0?511-[0-9A-Z\-]{4,}\b/) || [])[0] ||
+    "";
+
+  return { mac, serial, model, partNumber, raw: raw };
 }
 
 function cropCanvasFromVideo_(video){
@@ -615,24 +688,24 @@ function cropCanvasFromVideo_(video){
   const ctx = full.getContext("2d");
   ctx.drawImage(video, 0, 0, vw, vh);
 
-  // Crop: bottom-ish band where printed text typically lives
-  const cropX = Math.floor(vw * 0.06);
-  const cropW = Math.floor(vw * 0.88);
-  const cropY = Math.floor(vh * 0.52);
-  const cropH = Math.floor(vh * 0.42);
+  // Slightly bigger crop (labels can be center/right)
+  const cropX = Math.floor(vw * 0.04);
+  const cropW = Math.floor(vw * 0.92);
+  const cropY = Math.floor(vh * 0.44);
+  const cropH = Math.floor(vh * 0.52);
 
   const crop = document.createElement("canvas");
   crop.width = cropW; crop.height = cropH;
   const cctx = crop.getContext("2d");
   cctx.drawImage(full, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-  // Slight contrast boost (cheap, helps on gray labels)
+  // Contrast/threshold-ish
   const img = cctx.getImageData(0,0,cropW,cropH);
   const d = img.data;
   for(let i=0;i<d.length;i+=4){
     const r=d[i], g=d[i+1], b=d[i+2];
     const y = (0.299*r + 0.587*g + 0.114*b);
-    const v = y > 140 ? 255 : (y < 90 ? 0 : y); // threshold-ish
+    const v = y > 150 ? 255 : (y < 85 ? 0 : y);
     d[i]=d[i+1]=d[i+2]=v;
   }
   cctx.putImageData(img,0,0);
@@ -640,9 +713,35 @@ function cropCanvasFromVideo_(video){
   return crop;
 }
 
+function chooseAssetTagCandidate_(text){
+  const t = cleanOcr_(text).toUpperCase();
+
+  // Candidates: typical asset tags are alnum/hyphen, 4-18 chars
+  const cands = (t.match(/\b[A-Z0-9][A-Z0-9\-]{3,17}\b/g) || [])
+    .map(x=>x.trim())
+    .filter(x=>!isBadTagCandidate_(x));
+
+  // Prefer things that contain a dash or are mostly digits/letters (not words)
+  // Also deprioritize anything that looks like MAC/serial/model
+  cands.sort((a,b)=>{
+    const score = (s)=>{
+      let sc=0;
+      if (/-/.test(s)) sc+=2;
+      if (/[0-9]/.test(s) && /[A-Z]/.test(s)) sc+=2;
+      if (/^[0-9]{6,}$/.test(s)) sc+=1;
+      if (s.length >= 6 && s.length <= 12) sc+=1;
+      return sc;
+    };
+    return score(b)-score(a);
+  });
+
+  return cands[0] || "";
+}
+
 async function runOCRFallback(mode){
   if (ocrBusy) return;
   ocrBusy = true;
+
   try{
     setStatus(mode === "auto" ? "Tiny label — reading text…" : "OCR reading… hold steady.", "warn");
 
@@ -653,7 +752,8 @@ async function runOCRFallback(mode){
       crop,
       "eng",
       {
-        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:-./ ",
+        // Expanded whitelist for Cisco/Moto labels
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:-./() ",
         preserve_interword_spaces: "1"
       }
     );
@@ -666,33 +766,48 @@ async function runOCRFallback(mode){
 
     const ex = extractFromOcrText_(text);
 
-    // Apply detected model/make/type
+    // Apply model/make/type hints
     if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
     if (ex.model) applyAutoDetect_(ex.model);
+    if (ex.partNumber && !el('model').value.trim()){
+      // Motorola P/N strongly indicates TW-511 family
+      if (/^TW-0?511/i.test(ex.partNumber)) {
+        el('model').value = "TW-511";
+        el('make').value = "Motorola";
+        el('deviceType').value = "Other";
+        populateModelPickers();
+      }
+    }
 
-    // Now stage fill rules
     if (scanStage === "id"){
+      // Prefer MAC if found, otherwise serial
       if (ex.mac && !el('mac').value.trim()) el('mac').value = ex.mac;
       if (!el('mac').value.trim() && ex.serial && !el('serial').value.trim()) el('serial').value = ex.serial;
 
       if (el('mac').value.trim() || el('serial').value.trim()){
-        scanStage = "asset";
-        stageHint_();
         beep_();
-        setStatus("Captured via OCR — now scan Asset Tag.", "ok");
+        if (isNoAssetTag_()){
+          setStatus("Captured via OCR — ready to submit (No Asset Tag).", "ok");
+        } else {
+          scanStage = "asset";
+          stageHint_();
+          setStatus("Captured via OCR — now scan Asset Tag.", "ok");
+        }
       } else {
         setStatus("OCR read text but no MAC/Serial matched.", "warn");
       }
     } else {
-      // asset stage: OCR can still help if it sees an asset label (numbers)
-      // but we only fill assetTag if it's empty and looks like a tag (>=4 chars)
-      const maybeTag = (text.match(/\b[A-Z0-9\-]{4,}\b/) || [])[0] || "";
-      if (!el('assetTag').value.trim() && maybeTag) {
-        el('assetTag').value = maybeTag;
-        beep_();
-        setStatus("Asset Tag captured via OCR — ready to submit.", "ok");
+      if (isNoAssetTag_()){
+        setStatus("No Asset Tag enabled — ready to submit.", "ok");
       } else {
-        setStatus("OCR complete — review fields.", "ok");
+        const maybeTag = chooseAssetTagCandidate_(text);
+        if (!el('assetTag').value.trim() && maybeTag) {
+          el('assetTag').value = maybeTag;
+          beep_();
+          setStatus("Asset Tag captured via OCR — ready to submit.", "ok");
+        } else {
+          setStatus("OCR complete — review fields.", "ok");
+        }
       }
     }
 
@@ -714,17 +829,19 @@ function handleDecodedText_(text, source){
   const raw = norm_(text);
   el('techHint').textContent = `Last input: ${source} → ${raw}`;
 
-  // Autodetect make/model/type on any scan
   applyAutoDetect_(raw);
 
   if (scanStage === "id"){
     if (looksLikeMac(raw)){
       el('mac').value = formatMac(raw);
-      setStatus("MAC captured — now scan Asset Tag.", "ok");
       beep_();
-      scanStage = "asset";
+      if (isNoAssetTag_()){
+        setStatus("MAC captured — ready to submit (No Asset Tag).", "ok");
+      } else {
+        setStatus("MAC captured — now scan Asset Tag.", "ok");
+        scanStage = "asset";
+      }
     } else {
-      // If they scanned something that looks like a model (WS-C...), do NOT put it in serial
       const m = detectModelFromText_(raw);
       if (m){
         if (!el('model').value.trim()) el('model').value = m;
@@ -732,15 +849,24 @@ function handleDecodedText_(text, source){
         beep_();
       } else {
         el('serial').value = raw;
-        setStatus("Serial captured — now scan Asset Tag.", "ok");
         beep_();
-        scanStage = "asset";
+        if (isNoAssetTag_()){
+          setStatus("Serial captured — ready to submit (No Asset Tag).", "ok");
+        } else {
+          setStatus("Serial captured — now scan Asset Tag.", "ok");
+          scanStage = "asset";
+        }
       }
     }
   } else {
-    el('assetTag').value = raw;
-    setStatus("Asset Tag captured — ready to submit.", "ok");
-    beep_();
+    if (isNoAssetTag_()){
+      setStatus("No Asset Tag enabled — ready to submit.", "ok");
+      beep_();
+    } else {
+      el('assetTag').value = raw;
+      setStatus("Asset Tag captured — ready to submit.", "ok");
+      beep_();
+    }
   }
 
   stageHint_();
@@ -783,7 +909,6 @@ async function toggleTorch(){
  * SUBMIT + RESET
  *************************************************/
 async function submit(){
-  // normalize MAC
   const macVal = el('mac').value.trim();
   if (looksLikeMac(macVal)) el('mac').value = formatMac(macVal);
 
@@ -795,7 +920,8 @@ async function submit(){
     model: el('model').value.trim(),
     serial: el('serial').value.trim(),
     mac: el('mac').value.trim(),
-    assetTag: el('assetTag').value.trim()
+    assetTag: el('assetTag').value.trim(),
+    noAssetTag: isNoAssetTag_()
   };
 
   try{
@@ -804,10 +930,12 @@ async function submit(){
     setStatus(res.message + " — next device.", "ok");
     beep_();
 
-    // reset for next device
     el('serial').value="";
     el('mac').value="";
     el('assetTag').value="";
+    el('noAssetTag').checked = false;
+    applyNoAssetTagUI_();
+
     scanStage="id";
     stageHint_();
 
@@ -842,6 +970,7 @@ el('unknownModelBtn').addEventListener('click', ()=> el('model').focus());
 
 el('model').addEventListener('blur', ()=>{ learnModelIfNew_(); updateSubmitEnabled(); });
 
+el('noAssetTag').addEventListener('change', applyNoAssetTagUI_);
 el('startBtn').addEventListener('click', ()=>startScan());
 el('stopBtn').addEventListener('click', ()=>stopScan());
 el('submitBtn').addEventListener('click', ()=>submit());
@@ -853,6 +982,7 @@ window.addEventListener('load', ()=>{
   populateModelPickers();
   scanStage="id";
   stageHint_();
+  applyNoAssetTagUI_();
   updateSubmitEnabled();
   if (ACCESS_KEY) setStatus("Tap START SCANNING.", "");
 });
