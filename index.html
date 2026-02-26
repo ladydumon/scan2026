@@ -123,7 +123,7 @@
     </div>
 
     <div class="field">
-      <label for="mac">MAC (Serial OR MAC required)</label>
+      <label for="mac">MAC (used only if Serial missing)</label>
       <input id="mac" type="text" placeholder="Auto-filled from scan (auto-formats)" />
     </div>
 
@@ -214,7 +214,7 @@ async function apiSubmit(payload){
   body.set("serial", payload.serial || "");
   body.set("mac", payload.mac || "");
   body.set("assetTag", payload.assetTag || "");
-  body.set("noAssetTag", payload.noAssetTag ? "1" : "0"); // NEW
+  body.set("noAssetTag", payload.noAssetTag ? "1" : "0");
 
   const res = await fetch(API_BASE, {
     method: "POST",
@@ -374,7 +374,6 @@ function detectModelFromText_(t){
   const arubaAp = s.match(/\bAP-\d{3}\b/i);
   if (arubaAp) return arubaAp[0].toUpperCase();
 
-  // Motorola TW-511 label family
   const moto = s.match(/\bTW-511\b/i) || s.match(/\bTW-0?511\b/i);
   if (moto) return "TW-511";
 
@@ -392,23 +391,6 @@ function detectMakeFromModel_(model){
   return "";
 }
 
-const OUI_HINTS = {
-  "001B0C":"Cisco","0026C8":"Cisco","0C2724":"Cisco","F0F7E7":"Cisco",
-  "0010DB":"Juniper","5C5B35":"Juniper",
-  "000B86":"Aruba","D89E3F":"Aruba",
-  "F09FC2":"Ubiquiti","24A43C":"Ubiquiti",
-  "000D58":"Ruckus",
-  "FCA13E":"Fortinet",
-  // Motorola often varies; you can add OUIs as you see them
-};
-
-function detectMakeFromMac_(mac){
-  const hex = (mac||"").toUpperCase().replace(/[^0-9A-F]/g,'');
-  if (hex.length !== 12) return "";
-  const oui = hex.slice(0,6);
-  return OUI_HINTS[oui] || "";
-}
-
 function detectDeviceTypeFromModel_(model, make){
   const m = norm_(model).toUpperCase();
   const mk = norm_(make);
@@ -420,15 +402,11 @@ function detectDeviceTypeFromModel_(model, make){
 
 function applyAutoDetect_(decodedText){
   const raw = norm_(decodedText);
-
   const modelFromText = detectModelFromText_(raw);
-  let makeGuess = "";
-
-  if (modelFromText) makeGuess = detectMakeFromModel_(modelFromText);
-  if (!makeGuess && looksLikeMac(raw)) makeGuess = detectMakeFromMac_(raw);
-
-  if (makeGuess) el('make').value = makeGuess;
   if (modelFromText && !el('model').value.trim()) el('model').value = modelFromText;
+
+  const makeGuess = detectMakeFromModel_(el('model').value);
+  if (makeGuess) el('make').value = makeGuess;
 
   const typeGuess = detectDeviceTypeFromModel_(el('model').value, el('make').value);
   if (typeGuess) el('deviceType').value = typeGuess;
@@ -506,8 +484,8 @@ function updateSubmitEnabled(){
   const serial=el('serial').value.trim();
   const mac=el('mac').value.trim();
   const assetTag=el('assetTag').value.trim();
-  const hasSerialOrMac=!!(serial||mac);
 
+  const hasSerialOrMac=!!(serial||mac);
   const assetOK = isNoAssetTag_() ? true : !!assetTag;
   const requiredOK=deviceType && make && model && assetOK && hasSerialOrMac;
 
@@ -522,7 +500,7 @@ let scanStage = "id"; // "id" -> "asset"
 function stageHint_(){
   el('stageHint').textContent =
     (scanStage === "id")
-      ? "Stage 1: Scan SERIAL or MAC (auto-detects)."
+      ? "Stage 1: Scan SERIAL (preferred) or MAC."
       : "Stage 2: Scan ASSET TAG (required).";
 }
 function beep_(){
@@ -577,7 +555,6 @@ async function startScan(){
           scanning = false;
 
           handleDecodedText_(result.text, "barcode");
-
           setTimeout(()=>startScan(), 120);
         }
       }
@@ -599,7 +576,8 @@ function stopScan(){
 
 /*************************************************
  * OCR FALLBACK (tiny labels)
- * TUNED: Cisco + Motorola label formats
+ * SERIAL PREFERRED OVER MAC
+ * Cisco + Motorola tuned
  *************************************************/
 function cleanOcr_(s){
   return (s||"")
@@ -610,72 +588,38 @@ function cleanOcr_(s){
     .trim();
 }
 
-// Strong “known-noise” words to ignore when choosing an asset tag candidate
-const TAG_STOPWORDS = new Set([
-  "SN","S/N","SERIAL","MAC","AC","PID","VID","FCC","ID","MODEL","MADE","TAIWAN",
-  "INPUT","RATING","DATE","MFG","STACK","CISCO","MOTOROLA","TW","WS","CATALYST",
-  "SWITCH","AP","OTHER","US","V04","V0","V"
-].map(x=>x.toUpperCase()));
-
-function isBadTagCandidate_(c){
-  const s = (c||"").toUpperCase();
-  if (!s) return true;
-  if (s.length < 4) return true;
-  if (TAG_STOPWORDS.has(s)) return true;
-  if (/^(MADE|TAIWAN|INPUT|RATING|FCC|MODEL|SERIAL|MAC|PID|VID)$/i.test(s)) return true;
-  // Don’t accidentally treat model/PID as “asset tag”
-  if (/^WS-C/i.test(s)) return true;
-  if (/^TW-0?511/i.test(s)) return true;
-  if (/^FOC/i.test(s)) return true;
-  return false;
-}
-
 function extractFromOcrText_(text){
-  const raw = cleanOcr_(text);
-  const t = raw.toUpperCase();
+  const t = cleanOcr_(text).toUpperCase();
 
-  // MAC: prefer "AC:" or "MAC:" labeled formats (Motorola photo)
+  // SERIAL FIRST
+  let serial =
+      (t.match(/\bSN[:\s\-]*([A-Z0-9]{8,16})\b/) || [])[1]
+   || (t.match(/\bS\/N[:\s\-]*([0-9]{10,18})\b/) || [])[1]
+   || (t.match(/\bFOC[0-9A-Z]{7,10}\b/) || [])[0]
+   || (t.match(/\b[0-9]{10,14}\b/) || [])[0]
+   || (t.match(/\b[A-Z]{3}[A-Z0-9]{7,13}\b/) || [])[0]
+   || "";
+
+  // MAC SECONDARY
   let mac =
-    (t.match(/\b(?:AC|MAC)\s*[:\-]?\s*([0-9A-F]{12})\b/) || [])[1] ||
-    (t.match(/\b([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}\b/) || [])[0] ||
-    (t.match(/\b[0-9A-F]{12}\b/) || [])[0] ||
-    "";
+      (t.match(/\b(?:AC|MAC)\s*[:\-]?\s*([0-9A-F]{12})\b/) || [])[1]
+   || (t.match(/\b([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}\b/) || [])[0]
+   || (t.match(/\b[0-9A-F]{12}\b/) || [])[0]
+   || "";
 
-  if (mac) mac = formatMac(mac);
+  // MODEL
+  let model =
+      (t.match(/\bWS-C[0-9A-Z\-]+\b/) || [])[0]
+   || (t.match(/\b(EX|QFX)\d{3,4}\b/) || [])[0]
+   || (t.match(/\bAP-\d{3}\b/) || [])[0]
+   || (t.match(/\bTW-511\b/) || [])[0]
+   || "";
 
-  // Cisco Serial: SN: FOC1746V4AN (your photo)
-  // General Cisco-like: 3 letters + 8-10 alnum
-  const ciscoSN =
-    (t.match(/\bSN[:\s]*([A-Z]{3}[A-Z0-9]{7,10})\b/) || [])[1] ||
-    (t.match(/\b(FOC[0-9A-Z]{7,10})\b/) || [])[1] ||
-    "";
-
-  // Motorola Serial: S/N: 14113622401388 (numeric)
-  const motoSN =
-    (t.match(/\bS\/N[:\s]*([0-9]{10,18})\b/) || [])[1] ||
-    (t.match(/\bSN[:\s]*([0-9]{10,18})\b/) || [])[1] ||
-    "";
-
-  const serial =
-    ciscoSN || motoSN ||
-    (t.match(/\b[A-Z]{3}[A-Z0-9]{7,13}\b/) || [])[0] || // fallback
-    "";
-
-  // Cisco PID/Model: PID: WS-C2960S-24TS-L V04 (your photo)
-  const model =
-    (t.match(/\bWS-C[0-9A-Z\-]+\b/) || [])[0] ||
-    (t.match(/\b(EX|QFX)\d{3,4}\b/) || [])[0] ||
-    (t.match(/\bAP-\d{3}\b/) || [])[0] ||
-    (t.match(/\bTW-511\b/) || [])[0] ||
-    "";
-
-  // Motorola P/N (helpful for model auto-detect)
-  const partNumber =
-    (t.match(/\bP\/N[:\s]*([A-Z0-9\-]{6,})\b/) || [])[1] ||
-    (t.match(/\bTW-0?511-[0-9A-Z\-]{4,}\b/) || [])[0] ||
-    "";
-
-  return { mac, serial, model, partNumber, raw: raw };
+  return {
+    serial: serial || "",
+    mac: mac ? formatMac(mac) : "",
+    model: model || ""
+  };
 }
 
 function cropCanvasFromVideo_(video){
@@ -688,7 +632,6 @@ function cropCanvasFromVideo_(video){
   const ctx = full.getContext("2d");
   ctx.drawImage(video, 0, 0, vw, vh);
 
-  // Slightly bigger crop (labels can be center/right)
   const cropX = Math.floor(vw * 0.04);
   const cropW = Math.floor(vw * 0.92);
   const cropY = Math.floor(vh * 0.44);
@@ -699,7 +642,6 @@ function cropCanvasFromVideo_(video){
   const cctx = crop.getContext("2d");
   cctx.drawImage(full, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-  // Contrast/threshold-ish
   const img = cctx.getImageData(0,0,cropW,cropH);
   const d = img.data;
   for(let i=0;i<d.length;i+=4){
@@ -711,31 +653,6 @@ function cropCanvasFromVideo_(video){
   cctx.putImageData(img,0,0);
 
   return crop;
-}
-
-function chooseAssetTagCandidate_(text){
-  const t = cleanOcr_(text).toUpperCase();
-
-  // Candidates: typical asset tags are alnum/hyphen, 4-18 chars
-  const cands = (t.match(/\b[A-Z0-9][A-Z0-9\-]{3,17}\b/g) || [])
-    .map(x=>x.trim())
-    .filter(x=>!isBadTagCandidate_(x));
-
-  // Prefer things that contain a dash or are mostly digits/letters (not words)
-  // Also deprioritize anything that looks like MAC/serial/model
-  cands.sort((a,b)=>{
-    const score = (s)=>{
-      let sc=0;
-      if (/-/.test(s)) sc+=2;
-      if (/[0-9]/.test(s) && /[A-Z]/.test(s)) sc+=2;
-      if (/^[0-9]{6,}$/.test(s)) sc+=1;
-      if (s.length >= 6 && s.length <= 12) sc+=1;
-      return sc;
-    };
-    return score(b)-score(a);
-  });
-
-  return cands[0] || "";
 }
 
 async function runOCRFallback(mode){
@@ -752,7 +669,6 @@ async function runOCRFallback(mode){
       crop,
       "eng",
       {
-        // Expanded whitelist for Cisco/Moto labels
         tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:-./() ",
         preserve_interword_spaces: "1"
       }
@@ -766,25 +682,18 @@ async function runOCRFallback(mode){
 
     const ex = extractFromOcrText_(text);
 
-    // Apply model/make/type hints
     if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
     if (ex.model) applyAutoDetect_(ex.model);
-    if (ex.partNumber && !el('model').value.trim()){
-      // Motorola P/N strongly indicates TW-511 family
-      if (/^TW-0?511/i.test(ex.partNumber)) {
-        el('model').value = "TW-511";
-        el('make').value = "Motorola";
-        el('deviceType').value = "Other";
-        populateModelPickers();
-      }
-    }
 
     if (scanStage === "id"){
-      // Prefer MAC if found, otherwise serial
-      if (ex.mac && !el('mac').value.trim()) el('mac').value = ex.mac;
-      if (!el('mac').value.trim() && ex.serial && !el('serial').value.trim()) el('serial').value = ex.serial;
+      // SERIAL ALWAYS FIRST
+      if (ex.serial && !el('serial').value.trim()){
+        el('serial').value = ex.serial;
+      } else if (!el('serial').value.trim() && ex.mac && !el('mac').value.trim()){
+        el('mac').value = ex.mac;
+      }
 
-      if (el('mac').value.trim() || el('serial').value.trim()){
+      if (el('serial').value.trim() || el('mac').value.trim()){
         beep_();
         if (isNoAssetTag_()){
           setStatus("Captured via OCR — ready to submit (No Asset Tag).", "ok");
@@ -794,20 +703,13 @@ async function runOCRFallback(mode){
           setStatus("Captured via OCR — now scan Asset Tag.", "ok");
         }
       } else {
-        setStatus("OCR read text but no MAC/Serial matched.", "warn");
+        setStatus("OCR read text but no Serial/MAC matched.", "warn");
       }
     } else {
       if (isNoAssetTag_()){
         setStatus("No Asset Tag enabled — ready to submit.", "ok");
       } else {
-        const maybeTag = chooseAssetTagCandidate_(text);
-        if (!el('assetTag').value.trim() && maybeTag) {
-          el('assetTag').value = maybeTag;
-          beep_();
-          setStatus("Asset Tag captured via OCR — ready to submit.", "ok");
-        } else {
-          setStatus("OCR complete — review fields.", "ok");
-        }
+        setStatus("OCR complete — scan Asset Tag barcode/label.", "warn");
       }
     }
 
@@ -824,38 +726,35 @@ async function runOCRFallback(mode){
 
 /*************************************************
  * HANDLE DECODED TEXT (barcode/QR)
+ * SERIAL preferred over MAC
  *************************************************/
 function handleDecodedText_(text, source){
   const raw = norm_(text);
   el('techHint').textContent = `Last input: ${source} → ${raw}`;
-
   applyAutoDetect_(raw);
 
   if (scanStage === "id"){
-    if (looksLikeMac(raw)){
-      el('mac').value = formatMac(raw);
+    // Prefer serial unless it is clearly MAC
+    if (!looksLikeMac(raw)){
+      el('serial').value = raw;
+      beep_();
+      if (isNoAssetTag_()){
+        setStatus("Serial captured — ready to submit (No Asset Tag).", "ok");
+      } else {
+        setStatus("Serial captured — now scan Asset Tag.", "ok");
+        scanStage = "asset";
+      }
+    } else {
+      // only use MAC if serial is empty
+      if (!el('serial').value.trim()){
+        el('mac').value = formatMac(raw);
+      }
       beep_();
       if (isNoAssetTag_()){
         setStatus("MAC captured — ready to submit (No Asset Tag).", "ok");
       } else {
         setStatus("MAC captured — now scan Asset Tag.", "ok");
         scanStage = "asset";
-      }
-    } else {
-      const m = detectModelFromText_(raw);
-      if (m){
-        if (!el('model').value.trim()) el('model').value = m;
-        setStatus("Model detected — now scan Serial/MAC.", "warn");
-        beep_();
-      } else {
-        el('serial').value = raw;
-        beep_();
-        if (isNoAssetTag_()){
-          setStatus("Serial captured — ready to submit (No Asset Tag).", "ok");
-        } else {
-          setStatus("Serial captured — now scan Asset Tag.", "ok");
-          scanStage = "asset";
-        }
       }
     }
   } else {
