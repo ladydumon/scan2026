@@ -548,7 +548,9 @@ async function startScan(){
   try {
     if (!reader) reader = new ZXing.BrowserMultiFormatReader();
 
-    const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+    // ✅ Compatible across ZXing builds:
+    // getVideoInputDevices() exists on BrowserCodeReader / BrowserMultiFormatReader instances
+    const devices = await reader.getVideoInputDevices();
     const back = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[0];
 
     await reader.decodeFromVideoDevice(
@@ -556,11 +558,13 @@ async function startScan(){
       "video",
       (result, err) => {
         if (result?.text) {
-          // small debounce to avoid double-fires
+          // stop one decode cycle
           reader.reset();
           scanning = false;
+
           setFieldFromScan_(result.text);
-          // auto-restart immediately for warehouse speed
+
+          // warehouse-speed restart
           setTimeout(() => startScan(), 120);
         }
       }
