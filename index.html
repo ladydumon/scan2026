@@ -30,10 +30,6 @@
     .btnSecondary{ background:rgba(255,255,255,.08); color:var(--text); border:1px solid rgba(255,255,255,.14); }
     .btnDanger{ background:rgba(239,68,68,.12); color:#fecaca; border:1px solid rgba(239,68,68,.45); }
     .big{ padding:14px; font-size:16px; }
-    video{
-      width:100%; max-height:360px; border-radius:12px; background:#000; border:1px solid rgba(255,255,255,.10);
-      object-fit: cover;
-    }
     .msg{ margin-top:10px; font-size:13px; }
     .ok{ color:#86efac; } .warn{ color:#fcd34d; } .bad{ color:#fca5a5; }
     .tiny{ font-size:12px; color:var(--muted); margin-top:6px; line-height:1.35; }
@@ -42,13 +38,20 @@
     }
     .dupeBox.bad{ background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.35); }
     .dupeTitle{ font-weight:900; margin-bottom:6px; }
-    .lock{ opacity:.35; pointer-events:none; filter:grayscale(.5); }
-    .checkrow{ display:flex; gap:10px; align-items:flex-start; }
-    .checkrow input{ width:auto; transform:scale(1.2); margin-top:3px; }
     .hintBox{
       margin-top:8px; padding:10px; border-radius:12px;
       background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.10);
     }
+    .previewWrap{
+      margin-top:10px;
+      border:1px solid rgba(255,255,255,.10);
+      border-radius:12px;
+      overflow:hidden;
+      background:#000;
+    }
+    img#preview{ width:100%; display:block; max-height:420px; object-fit:contain; background:#000; }
+    .checkrow{ display:flex; gap:10px; align-items:flex-start; }
+    .checkrow input{ width:auto; transform:scale(1.2); margin-top:3px; }
     canvas{ display:none; }
   </style>
 
@@ -59,8 +62,8 @@
 <body>
   <h1>Network Asset Scan</h1>
   <div class="sub">
-    <b>Default mode:</b> Photo/OCR first. It will try to read <b>Serial</b> (preferred) and Model/Make from the label.
-    If no Serial is found but a MAC is found, it will place MAC into the Serial field.
+    <b>Default mode:</b> <b>Take a photo</b> (native camera autofocus) → OCR reads Serial + Model/Make.
+    Serial is preferred. If no Serial is found but MAC is found, MAC will be placed into Serial.
   </div>
 
   <div id="app" class="card">
@@ -97,40 +100,53 @@
     </div>
 
     <div class="field">
-      <label for="serial">Serial * (preferred)</label>
-      <input id="serial" type="text" placeholder="Auto-filled from OCR (Serial preferred, MAC only if no Serial found)" />
+      <label for="serial">Serial *</label>
+      <input id="serial" type="text" placeholder="Auto-filled from photo OCR (MAC used only if Serial missing)" />
     </div>
 
     <div class="field">
       <label for="assetTag">Company Asset Tag (optional)</label>
-      <input id="assetTag" type="text" placeholder="Optional (scan/type). Never required." />
+      <input id="assetTag" type="text" placeholder="Optional (type). Never required." />
       <div class="checkrow" style="margin-top:8px;">
         <input id="noAssetTag" type="checkbox" checked />
         <div class="tiny">
-          <b>No Asset Tag</b> (leave blank). Asset tag is never required, but if unchecked, you can still type one.
+          <b>No Asset Tag</b> (leave blank). Asset Tag is never required.
         </div>
       </div>
     </div>
 
     <div class="field">
-      <label>Camera</label>
-      <video id="video" autoplay muted playsinline></video>
-      <canvas id="cap"></canvas>
+      <label>Photo (native camera autofocus)</label>
+
+      <div class="row">
+        <div><button id="takePhotoBtn" class="btnPrimary big" type="button">TAKE PHOTO (DEFAULT)</button></div>
+        <div><button id="retakeBtn" class="btnSecondary big" type="button">RETAKE</button></div>
+      </div>
+
+      <!-- hidden native camera capture -->
+      <input
+        id="photoInput"
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style="display:none"
+      />
+
+      <div class="previewWrap">
+        <img id="preview" alt="Photo preview (tap Take Photo first)" />
+      </div>
 
       <div class="hintBox">
-        <div class="tiny"><b>Tips:</b> Tap video to refocus. If it won’t focus, back up a few inches and try again.</div>
+        <div class="tiny">
+          Tip: fill the label area in the frame. If text is tiny, get closer and keep it flat (no glare).
+        </div>
         <div class="tiny" id="techHint"></div>
       </div>
     </div>
 
-    <div class="row">
-      <div><button id="startBtn" class="btnPrimary big" type="button">START CAMERA</button></div>
-      <div><button id="stopBtn" class="btnDanger big" type="button">STOP</button></div>
-    </div>
-
     <div class="row" style="margin-top:10px;">
-      <div><button id="ocrBtn" class="btnSecondary big" type="button">PHOTO OCR (DEFAULT)</button></div>
-      <div><button id="torchBtn" class="btnSecondary big" type="button">FLASHLIGHT</button></div>
+      <div><button id="ocrBtn" class="btnSecondary big" type="button">RUN OCR AGAIN</button></div>
+      <div><button id="clearBtn" class="btnDanger big" type="button">CLEAR FIELDS</button></div>
     </div>
 
     <button id="submitBtn" class="btnPrimary big" disabled type="button" style="margin-top:10px;">
@@ -143,6 +159,8 @@
     </div>
 
     <div id="status" class="msg"></div>
+
+    <canvas id="work"></canvas>
   </div>
 
 <script>
@@ -176,16 +194,7 @@ function beep_(){
 }
 
 /*************************************************
- * Key lock (optional)
- *************************************************/
-function lockIfNoKey_(){
-  if (ACCESS_KEY) return;
-  setStatus("Missing access key. Use link like: ?k=FIT-SCAN-2026", "bad");
-  el('app').classList.add('lock');
-}
-
-/*************************************************
- * API (GET only = fewer CORS issues)
+ * API (GET to reduce iOS issues)
  *************************************************/
 async function apiCheckDuplicates(serial, assetTag){
   const url = new URL(API_BASE);
@@ -200,7 +209,6 @@ async function apiCheckDuplicates(serial, assetTag){
 }
 
 async function apiSubmit(payload){
-  // Use GET submit to avoid CORS preflight on iOS/Safari
   const url = new URL(API_BASE);
   url.searchParams.set("action","submit");
   url.searchParams.set("k", ACCESS_KEY);
@@ -218,18 +226,8 @@ async function apiSubmit(payload){
 }
 
 /*************************************************
- * OCR helpers
+ * OCR parsing (Motorola + Cisco focused)
  *************************************************/
-function looksLikeMacRaw_(s){
-  const hex = upper_(s).replace(/[^0-9A-F]/g,'');
-  return hex.length === 12;
-}
-function formatMac_(s){
-  const hex = upper_(s).replace(/[^0-9A-F]/g,'');
-  if (hex.length !== 12) return norm_(s);
-  return hex.match(/.{1,2}/g).join(':');
-}
-
 function cleanOcr_(s){
   return (s||"")
     .replace(/[|]/g,'I')
@@ -237,12 +235,17 @@ function cleanOcr_(s){
     .trim();
 }
 
-// Focused parsing for Motorola + Cisco label styles
+function formatMac_(s){
+  const hex = upper_(s).replace(/[^0-9A-F]/g,'');
+  if (hex.length !== 12) return norm_(s);
+  return hex.match(/.{1,2}/g).join(':');
+}
+
 function extractFromOcrText_(text){
   const raw = cleanOcr_(text);
   const t = raw.toUpperCase();
 
-  // --- MAC (Motorola has "MAC: FC0A81AA5D60")
+  // MAC patterns (Motorola "MAC: FC0A81AA5D60")
   let mac =
     (t.match(/\bMAC[:\s]*([0-9A-F]{12})\b/) || [])[1] ||
     (t.match(/\b([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}\b/) || [])[0] ||
@@ -251,216 +254,117 @@ function extractFromOcrText_(text){
 
   if (mac) mac = formatMac_(mac);
 
-  // --- SERIAL: prefer explicit "S/N:" or "SN:"
+  // SERIAL preferred (explicit S/N or SN or SERIAL)
   let serial =
     (t.match(/\bS\/N[:\s]*([A-Z0-9]{6,20})\b/) || [])[1] ||
     (t.match(/\bSN[:\s]*([A-Z0-9]{6,20})\b/) || [])[1] ||
     (t.match(/\bSERIAL[:\s]*([A-Z0-9]{6,20})\b/) || [])[1] ||
     "";
 
-  // Cisco-ish fallback (often 10–12 chars alnum like FOC1746V4AN)
+  // Cisco-ish fallback (often like FOC1746V4AN)
   if (!serial){
     const c = (t.match(/\b[AFJKS][A-Z0-9]{7,14}\b/) || [])[0] || "";
     if (c) serial = c;
   }
 
-  // --- Model:
-  // Motorola: "MODEL: TW-511"
+  // Model
   let model =
-    (t.match(/\bMODEL[:\s]*([A-Z0-9\-]{3,20})\b/) || [])[1] ||
+    (t.match(/\bMODEL[:\s]*([A-Z0-9\-]{3,24})\b/) || [])[1] ||
     (t.match(/\bTW-511\b/) || [])[0] ||
     (t.match(/\bWS-C[0-9A-Z\-]+\b/) || [])[0] ||
-    (t.match(/\b(C9\d{2,4}|C29\d{2}|C35\d{2}|C38\d{2})\b/) || [])[0] ||
+    (t.match(/\bCATALYST\s?\d{3,4}\b/) || [])[0] ||
     "";
 
-  // Make guess:
+  // Make guess
   let make = "";
   if (t.includes("MOTOROLA") || t.includes("TW-511")) make = "Motorola";
   else if (t.includes("CISCO") || model.startsWith("WS-C") || t.includes("CATALYST")) make = "Cisco";
 
-  return { serial: serial || "", mac: mac || "", model: model || "", make: make || "" };
+  return { raw, serial, mac, model, make };
 }
 
-function applyAutoDetect_(ex){
-  // Fill model/make best effort
-  if (ex.make) el('make').value = ex.make;
-  if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
-
-  // TW-511 rule
+function applyRules_(){
+  // TW-511 always Switch + Motorola
   if (upper_(el('model').value) === "TW-511"){
     el('make').value = "Motorola";
     el('deviceType').value = "Switch";
   }
-
-  // Serial preferred. If no serial but mac exists, put mac into serial field.
-  if (ex.serial && !el('serial').value.trim()){
-    el('serial').value = ex.serial;
-  } else if (!el('serial').value.trim() && ex.mac){
-    el('serial').value = ex.mac; // your rule
-  }
 }
 
 /*************************************************
- * Camera start/stop with autofocus constraints
+ * Photo capture + OCR
  *************************************************/
-let stream = null;
-let torchOn = false;
+let lastImageDataUrl = "";
 let ocrBusy = false;
 
-async function startCamera(){
-  try{
-    setStatus("Starting camera…", "warn");
-
-    // Strong constraints (works best on Android Chrome; iOS Safari will ignore some)
-    const constraints = {
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width:  { ideal: 1920 },
-        height: { ideal: 1080 },
-        // iOS mostly ignores these, but Android uses them:
-        focusMode: "continuous",
-        advanced: [
-          { focusMode: "continuous" },
-          { zoom: 1 }
-        ]
-      }
-    };
-
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
-    const v = el('video');
-    v.srcObject = stream;
-
-    // Try to force continuous focus if supported
-    setTimeout(async ()=>{
-      try{
-        const track = stream.getVideoTracks()[0];
-        if (!track) return;
-        const caps = track.getCapabilities ? track.getCapabilities() : null;
-        if (caps && caps.focusMode && caps.focusMode.includes("continuous")){
-          await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
-        }
-      }catch{}
-    }, 500);
-
-    setStatus("Camera ready. Tap PHOTO OCR (default).", "ok");
-  }catch(e){
-    setStatus("Camera error: " + (e.message || e), "bad");
-  }
+function openCamera_(){
+  el('photoInput').click();
 }
 
-function stopCamera(){
-  try{
-    if (stream){
-      stream.getTracks().forEach(t=>t.stop());
-      stream = null;
-      el('video').srcObject = null;
-    }
-  }catch{}
-  setStatus("Stopped.", "");
+function readFileAsDataUrl_(file){
+  return new Promise((resolve, reject)=>{
+    const r = new FileReader();
+    r.onload = ()=>resolve(r.result);
+    r.onerror = ()=>reject(new Error("File read failed"));
+    r.readAsDataURL(file);
+  });
 }
 
-/*************************************************
- * Tap video to refocus (best-effort)
- *************************************************/
-async function refocusTap(){
-  try{
-    const v = el('video');
-    if (!v || !stream) return;
+async function preprocessToCanvas_(dataUrl){
+  // Draw to canvas and crop center label area + contrast boost
+  const img = new Image();
+  img.src = dataUrl;
 
-    // Some devices refocus just by touching the element (browser controlled),
-    // but we can also try constraints.
-    const track = stream.getVideoTracks()[0];
-    if (!track) return;
+  await new Promise((resolve, reject)=>{
+    img.onload = resolve;
+    img.onerror = ()=>reject(new Error("Image load failed"));
+  });
 
-    const caps = track.getCapabilities ? track.getCapabilities() : null;
+  const canvas = el('work');
+  const ctx = canvas.getContext('2d');
 
-    // If focusDistance exists, "0" is often closest focus.
-    if (caps && caps.focusDistance){
-      const min = caps.focusDistance.min ?? 0;
-      await track.applyConstraints({ advanced: [{ focusDistance: min }] });
-      // bounce back to auto/continuous if available
-      if (caps.focusMode && caps.focusMode.includes("continuous")){
-        await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
-      }
-    }
-  }catch{}
-}
+  // Draw full image to working canvas
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  ctx.drawImage(img, 0, 0);
 
-/*************************************************
- * Torch
- *************************************************/
-async function toggleTorch(){
-  if (!stream){
-    setStatus("Flashlight: camera not running yet.", "warn");
-    return;
-  }
-  const track = stream.getVideoTracks()[0];
-  const caps = track.getCapabilities ? track.getCapabilities() : null;
-  if (!caps || !caps.torch){
-    setStatus("Flashlight not supported on this device/browser.", "warn");
-    return;
-  }
-  torchOn = !torchOn;
-  try{
-    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
-    setStatus(torchOn ? "Flashlight ON" : "Flashlight OFF", "ok");
-  }catch(e){
-    torchOn = false;
-    setStatus("Flashlight error: " + (e.message || e), "warn");
-  }
-}
-
-/*************************************************
- * OCR from photo frame (DEFAULT FLOW)
- *************************************************/
-function captureCanvasFromVideo_(){
-  const v = el('video');
-  if (!v || !v.videoWidth) throw new Error("Video not ready yet. Start camera first.");
-
-  const canvas = el('cap');
-  const vw = v.videoWidth, vh = v.videoHeight;
-
-  // full frame canvas
-  canvas.width = vw;
-  canvas.height = vh;
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(v, 0, 0, vw, vh);
-
-  // Crop center-ish where label usually is.
-  // (Less aggressive than before to work for your Motorola + Cisco shots)
-  const crop = document.createElement("canvas");
+  // Crop: center region (good for "label in middle" shots)
+  const vw = canvas.width, vh = canvas.height;
   const cropW = Math.floor(vw * 0.86);
-  const cropH = Math.floor(vh * 0.58);
+  const cropH = Math.floor(vh * 0.62);
   const cropX = Math.floor((vw - cropW) / 2);
   const cropY = Math.floor((vh - cropH) / 2);
 
+  const crop = document.createElement('canvas');
   crop.width = cropW;
   crop.height = cropH;
-  const cctx = crop.getContext("2d");
+  const cctx = crop.getContext('2d');
   cctx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-  // Contrast boost (helps barcodes text)
-  const img = cctx.getImageData(0,0,cropW,cropH);
-  const d = img.data;
+  // Contrast/threshold-ish boost
+  const imgData = cctx.getImageData(0,0,cropW,cropH);
+  const d = imgData.data;
   for (let i=0;i<d.length;i+=4){
     const y = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-    const v2 = y > 160 ? 255 : (y < 90 ? 0 : y);
-    d[i]=d[i+1]=d[i+2]=v2;
+    const v = y > 165 ? 255 : (y < 85 ? 0 : y);
+    d[i]=d[i+1]=d[i+2]=v;
   }
-  cctx.putImageData(img,0,0);
+  cctx.putImageData(imgData,0,0);
 
   return crop;
 }
 
-async function runPhotoOCR(){
+async function runOCRFromLastPhoto_(){
+  if (!lastImageDataUrl){
+    setStatus("Take a photo first.", "warn");
+    return;
+  }
   if (ocrBusy) return;
   ocrBusy = true;
 
   try{
-    setStatus("Reading label… hold steady.", "warn");
-
-    const crop = captureCanvasFromVideo_();
+    setStatus("OCR running…", "warn");
+    const crop = await preprocessToCanvas_(lastImageDataUrl);
 
     const { data } = await Tesseract.recognize(
       crop,
@@ -472,26 +376,37 @@ async function runPhotoOCR(){
     );
 
     const text = cleanOcr_(data.text || "");
-    el('techHint').textContent = text ? ("OCR: " + text.slice(0,180) + (text.length>180 ? "…" : "")) : "OCR: (no text)";
+    el('techHint').textContent = text ? ("OCR: " + text.slice(0,220) + (text.length>220 ? "…" : "")) : "OCR: (no text)";
 
     if (!text){
-      setStatus("OCR found nothing — move closer / better light.", "warn");
+      setStatus("OCR found nothing — retake closer / reduce glare.", "warn");
       return;
     }
 
     const ex = extractFromOcrText_(text);
-    applyAutoDetect_(ex);
 
-    // If we got something useful, confirm
+    // Fill make/model
+    if (ex.make) el('make').value = ex.make;
+    if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
+
+    // Serial preferred; if missing and MAC exists, use MAC in Serial
+    if (ex.serial && !el('serial').value.trim()){
+      el('serial').value = ex.serial;
+    } else if (!el('serial').value.trim() && ex.mac){
+      el('serial').value = ex.mac;
+    }
+
+    applyRules_();
+
     if (el('serial').value.trim()){
-      setStatus("Captured via photo OCR.", "ok");
+      setStatus("Captured from photo OCR.", "ok");
       beep_();
     } else {
       setStatus("OCR read text but no Serial/MAC matched.", "warn");
     }
 
-    await runDupeCheck();
-    updateSubmitEnabled();
+    await runDupeCheck_();
+    updateSubmitEnabled_();
 
   }catch(e){
     setStatus("OCR error: " + (e.message || e), "bad");
@@ -505,7 +420,7 @@ async function runPhotoOCR(){
  *************************************************/
 let dupeState = { ok:true, issues:[] };
 
-function showDupe(issues){
+function showDupe_(issues){
   const box=el('dupeBox');
   const list=el('dupeList');
   if(!issues || issues.length===0){
@@ -517,26 +432,26 @@ function showDupe(issues){
   list.innerHTML=issues.map(i=>`• ${i.message}`).join("<br>");
 }
 
-async function runDupeCheck(){
+async function runDupeCheck_(){
   try{
     const serial = el('serial').value.trim();
-    // assetTag only participates if they typed one AND noAssetTag unchecked
+
     const noAsset = el('noAssetTag').checked;
     const assetTag = noAsset ? "" : el('assetTag').value.trim();
 
     const result = await apiCheckDuplicates(serial, assetTag);
     dupeState = result || { ok:true, issues:[] };
-    showDupe(dupeState.issues||[]);
+    showDupe_(dupeState.issues||[]);
   }catch{
     dupeState = { ok:true, issues:[] };
-    showDupe([]);
+    showDupe_([]);
   }
 }
 
 /*************************************************
  * Validation
  *************************************************/
-function updateSubmitEnabled(){
+function updateSubmitEnabled_(){
   const deviceType=el('deviceType').value.trim();
   const make=el('make').value.trim();
   const model=el('model').value.trim();
@@ -545,21 +460,15 @@ function updateSubmitEnabled(){
   // Asset tag NEVER required
   const requiredOK = deviceType && make && model && serial;
 
-  // Only block if assetTag provided AND duplicates (backend blocks only on asset tag dupes)
   const noDupes = (dupeState && dupeState.ok);
-
   el('submitBtn').disabled = !(requiredOK && noDupes);
 }
 
 /*************************************************
  * Submit + Reset
  *************************************************/
-async function submit(){
-  // TW-511 rule again (in case user edited fields)
-  if (upper_(el('model').value) === "TW-511"){
-    el('make').value = "Motorola";
-    el('deviceType').value = "Switch";
-  }
+async function submit_(){
+  applyRules_();
 
   const noAsset = el('noAssetTag').checked;
   const assetTag = noAsset ? "" : el('assetTag').value.trim();
@@ -579,12 +488,12 @@ async function submit(){
     setStatus(res.message + " — next device.", "ok");
     beep_();
 
-    // Reset for next device (keep make/type/model? up to you; keeping them helps speed)
+    // Reset minimal
     el('serial').value = "";
     el('assetTag').value = "";
     dupeState = { ok:true, issues:[] };
-    showDupe([]);
-    updateSubmitEnabled();
+    showDupe_([]);
+    updateSubmitEnabled_();
 
   }catch(err){
     setStatus(err.message || String(err), "bad");
@@ -592,43 +501,66 @@ async function submit(){
 }
 
 /*************************************************
+ * Clear
+ *************************************************/
+function clearFields_(){
+  el('model').value = "";
+  el('serial').value = "";
+  el('assetTag').value = "";
+  el('make').value = "Cisco";
+  el('deviceType').value = "Switch";
+  dupeState = { ok:true, issues:[] };
+  showDupe_([]);
+  updateSubmitEnabled_();
+  setStatus("Cleared.", "");
+}
+
+/*************************************************
  * Events
  *************************************************/
-el('startBtn').addEventListener('click', startCamera);
-el('stopBtn').addEventListener('click', stopCamera);
-el('ocrBtn').addEventListener('click', runPhotoOCR);
-el('torchBtn').addEventListener('click', toggleTorch);
-el('submitBtn').addEventListener('click', submit);
+el('takePhotoBtn').addEventListener('click', openCamera_);
+el('retakeBtn').addEventListener('click', openCamera_);
+el('ocrBtn').addEventListener('click', runOCRFromLastPhoto_);
+el('clearBtn').addEventListener('click', clearFields_);
+el('submitBtn').addEventListener('click', submit_);
 
-el('video').addEventListener('click', ()=>{ refocusTap(); setStatus("Tap video to refocus. If it won’t focus, back up a few inches and try again.", "warn"); });
+el('photoInput').addEventListener('change', async (evt)=>{
+  const file = evt.target.files && evt.target.files[0];
+  if (!file) return;
+
+  try{
+    setStatus("Loading photo…", "warn");
+    const dataUrl = await readFileAsDataUrl_(file);
+    lastImageDataUrl = dataUrl;
+    el('preview').src = dataUrl;
+    setStatus("Photo loaded — running OCR…", "warn");
+    await runOCRFromLastPhoto_();
+  }catch(e){
+    setStatus("Photo load error: " + (e.message || e), "bad");
+  }finally{
+    // allow same photo to be selected again
+    el('photoInput').value = "";
+  }
+});
 
 ['deviceType','make','model','serial','assetTag','noAssetTag'].forEach(id=>{
   el(id).addEventListener('input', async ()=>{
-    // TW-511 rule live
-    if (upper_(el('model').value) === "TW-511"){
-      el('make').value = "Motorola";
-      el('deviceType').value = "Switch";
-    }
-    await runDupeCheck();
-    updateSubmitEnabled();
+    applyRules_();
+    await runDupeCheck_();
+    updateSubmitEnabled_();
   });
   el(id).addEventListener('change', async ()=>{
-    if (upper_(el('model').value) === "TW-511"){
-      el('make').value = "Motorola";
-      el('deviceType').value = "Switch";
-    }
-    await runDupeCheck();
-    updateSubmitEnabled();
+    applyRules_();
+    await runDupeCheck_();
+    updateSubmitEnabled_();
   });
 });
 
 window.addEventListener('load', async ()=>{
-  lockIfNoKey_();
-  // Default behavior: start camera immediately, then user taps PHOTO OCR
-  await startCamera();
-  setStatus("Camera started. Tap PHOTO OCR (default) to capture label text.", "ok");
-  await runDupeCheck();
-  updateSubmitEnabled();
+  // Default CTA is TAKE PHOTO, so no auto camera stream here.
+  setStatus("Tap TAKE PHOTO (default).", "ok");
+  await runDupeCheck_();
+  updateSubmitEnabled_();
 });
 </script>
 </body>
