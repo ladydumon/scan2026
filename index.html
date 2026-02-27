@@ -32,7 +32,6 @@
     .big{ padding:14px; font-size:16px; }
     video{
       width:100%; max-height:340px; border-radius:12px; background:#000; border:1px solid rgba(255,255,255,.10);
-      object-fit: cover;
     }
     .msg{ margin-top:10px; font-size:13px; }
     .ok{ color:#86efac; } .warn{ color:#fcd34d; } .bad{ color:#fca5a5; }
@@ -45,19 +44,22 @@
     .lock{ opacity:.35; pointer-events:none; filter:grayscale(.5); }
     .pillRow{ display:flex; gap:10px; flex-wrap:wrap; }
     .pill{ flex:1; min-width: 160px; }
+    .checkRow{ display:flex; align-items:center; gap:10px; margin-top:8px; }
+    .checkRow input{ width:auto; transform:scale(1.2); }
+    .photoRow{ display:flex; gap:10px; margin-top:10px; }
   </style>
 
-  <!-- ZXing -->
+  <!-- Barcode/QR -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
-  <!-- OCR -->
+  <!-- OCR fallback -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 
 <body>
   <h1>Network Asset Scan</h1>
   <div class="sub">
-    <b>Rack Audit Mode:</b> Serial/MAC first → Asset Tag next (unless “No Asset Tag” checked).<br>
-    <b>iPhone focus note:</b> Safari web video may stay blurry even when your Camera app focuses. Use <b>TAKE PHOTO</b> (native camera autofocus) if needed.
+    <b>Rack Audit Mode:</b> Serial/MAC first → Asset Tag next (optional). Barcode scan + OCR fallback for tiny labels.
+    <br>Tip: Tap video to refocus. If it won’t focus, use TAKE PHOTO (native autofocus).
   </div>
 
   <div id="app" class="card">
@@ -109,6 +111,904 @@
         <div class="tiny">Type a model once → it becomes a suggestion next time.</div>
       </div>
       <div class="field">
+        <label>Quick buttons</label>
+        <div class="pillRow">
+          <button id="sameModelBtn" class="btnSecondary pill" type="button">Same model as last</button>
+          <button id="unknownModelBtn" class="btnSecondary pill" type="button">Unknown / Other model</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="serial">Serial (preferred) — Serial OR MAC required</label>
+      <input id="serial" type="text" placeholder="Auto-filled from scan/OCR (or type)" />
+    </div>
+
+    <div class="field">
+      <label for="mac">MAC (used only if Serial missing)</label>
+      <input id="mac" type="text" placeholder="Auto-filled from scan/OCR (auto-formats)" />
+    </div>
+
+    <div class="field">
+      <label for="assetTag">Company Asset Tag (optional)</label>
+      <input id="assetTag" type="text" placeholder="Scan/type if present — optional" />
+      <div class="checkRow">
+        <input id="noAssetTag" type="checkbox" />
+        <div class="tiny"><b>No Asset Tag</b> (optional flag). You can still submit either way.</div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Camera</label>
+      <video id="video" autoplay muted playsinline></video>
+      <div class="tiny" id="stageHint"></div>
+      <div class="tiny" id="techHint"></div>
+    </div>
+
+    <div class="row">
+      <div><button id="startBtn" class="btnPrimary big" type="button">START SCANNING</button></div>
+      <div><button id="stopBtn" class="btnDanger big" type="button">STOP</button></div>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <div><button id="torchBtn" class="btnSecondary big" type="button">FLASHLIGHT</button></div>
+      <div><button id="ocrBtn" class="btnSecondary big" type="button">FORCE OCR (tiny labels)</button></div>
+    </div>
+
+    <div class="photoRow">
+      <div style="flex:1;">
+        <button id="photoBtn" class="btnSecondary big" type="button">TAKE PHOTO (best focus)</button>
+        <input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none;">
+        <div class="tiny">Uses native camera autofocus (best for tiny serial stickers).</div>
+      </div>
+    </div>
+
+    <button id="submitBtn" class="btnPrimary big" disabled type="button" style="margin-top:10px;">
+      SUBMIT TO SHEET
+    </button>
+
+    <div id="dupeBox" class="dupeBox">
+      <div class="dupeTitle">Heads up:</div>
+      <div id="dupeList" style="font-size:13px;"></div>
+    </div>
+
+    <div id="status" class="msg"></div>
+  </div>
+
+<script>
+/*************************************************
+ * CONFIG
+ *************************************************/
+const API_BASE = "https://script.google.com/macros/s/AKfycbwlpaGqxw08bZ7jC2uxjWbOUq5Ru3SRrXHdPyTZcBq39y7vZm5nGsNjzP2LZJQTj_qUNw/exec";
+const ACCESS_KEY = new URLSearchParams(location.search).get("k") || "";
+
+function el(id){ return document.getElementById(id); }
+function setStatus(msg, cls){ const s=el('status'); s.textContent=msg||""; s.className="msg "+(cls||""); }
+function norm_(s){ return (s||"").toString().trim(); }
+
+/*************************************************
+ * KEY LOCK
+ *************************************************/
+function lockIfNoKey_(){
+  if (ACCESS_KEY) return;
+  setStatus("Missing access key. Use link like: ?k=FIT-SCAN-2026", "bad");
+  el('app').classList.add('lock');
+}
+
+/*************************************************
+ * API
+ *************************************************/
+async function apiCheckDuplicates(serial, mac, assetTag){
+  const url = new URL(API_BASE);
+  url.searchParams.set("action","checkDuplicates");
+  url.searchParams.set("k", ACCESS_KEY);
+  url.searchParams.set("serial", serial || "");
+  url.searchParams.set("mac", mac || "");
+  url.searchParams.set("assetTag", assetTag || "");
+  const res = await fetch(url.toString(), { method:"GET", cache:"no-store" });
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || "Duplicate check failed");
+  return j.result;
+}
+
+async function apiSubmit(payload){
+  const body = new URLSearchParams();
+  body.set("action","submit");
+  body.set("k", ACCESS_KEY);
+  body.set("deviceType", payload.deviceType || "");
+  body.set("make", payload.make || "");
+  body.set("model", payload.model || "");
+  body.set("serial", payload.serial || "");
+  body.set("mac", payload.mac || "");
+  body.set("assetTag", payload.assetTag || "");
+  body.set("noAssetTag", payload.noAssetTag ? "true" : "false");
+
+  const res = await fetch(API_BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+    body: body.toString()
+  });
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || "Submit failed");
+  return j;
+}
+
+/*************************************************
+ * MAC helpers
+ *************************************************/
+function looksLikeMac(s){
+  const hex=(s||'').toUpperCase().replace(/[^0-9A-F]/g,'');
+  return hex.length===12;
+}
+function formatMac(s){
+  const hex=(s||'').toUpperCase().replace(/[^0-9A-F]/g,'');
+  if(hex.length!==12) return (s||'').trim();
+  return hex.match(/.{1,2}/g).join(':');
+}
+
+/*************************************************
+ * MODEL LISTS + LEARNING
+ *************************************************/
+const BASE_MODELS = {
+  "Cisco": { "Switch":[ "WS-C2960S-24TS-L","WS-C2960S-48TS-L","WS-C2960X-24PD-L","WS-C2960X-48LPD-L","Catalyst 9200","Catalyst 9300","Catalyst 9500","Catalyst 2960","Catalyst 3650","Catalyst 3850","Nexus 3K","Nexus 9K" ],
+            "AP":[ "Aironet 2800","Aironet 3800","Catalyst 9115","Catalyst 9120","Catalyst 9130" ],
+            "Other":[] },
+  "Juniper": { "Switch":[ "EX2300","EX3400","EX4300","EX4400","QFX5100","QFX5120" ], "AP":[], "Other":[] },
+  "Aruba": { "Switch":[ "2930F","2930M","3810M","CX 6100","CX 6200","CX 6300","CX 6400" ],
+            "AP":[ "AP-505","AP-515","AP-535","AP-555","AP-635" ],
+            "Other":[] },
+  "Motorola": { "Switch":[], "AP":[], "Other":[ "TW-511" ] },
+  "DSLAM": { "Switch":[ "Adtran TA5000","Calix E7-2","Calix E7-20","Nokia 7360 ISAM","Nokia 7330 ISAM","Huawei MA5600","Huawei MA5800" ],
+            "AP":[], "Other":[] },
+  "Fortinet": { "Switch":[ "FortiSwitch 108F","FortiSwitch 124F","FortiSwitch 248E" ], "AP":[ "FortiAP 231F","FortiAP 431F" ], "Other":[] },
+  "Ruckus": { "Switch":[ "ICX 7150","ICX 7250","ICX 7450" ], "AP":[ "R510","R610","R650","R750" ], "Other":[] },
+  "Ubiquiti": { "Switch":[ "USW-24-PoE","USW-Pro-24-PoE","USW-48-PoE","USW-Pro-48-PoE","USW-Enterprise-24-PoE","USW-Aggregation" ],
+               "AP":[ "U6-Lite","U6-LR","U6-Pro","U6-Enterprise","U6-Mesh","U7-Pro" ],
+               "Other":[] },
+  "TP-Link": { "Switch":[ "TL-SG2008P","TL-SG2210P" ], "AP":[ "Omada EAP610","Omada EAP650" ], "Other":[] },
+  "Netgear": { "Switch":[ "GS108","GS110TP","M4300" ], "AP":[ "WAX610","WAX630" ], "Other":[] },
+  "Other": { "Switch":[], "AP":[], "Other":[] }
+};
+
+const LS_CUSTOM_MODELS = "scan2_custom_models_v5";
+const LS_RECENTS = "scan2_recent_models_v5";
+const LS_LAST_MODEL = "scan2_last_model_v5";
+
+function loadJSON_(k){ try { return JSON.parse(localStorage.getItem(k)||"{}"); } catch { return {}; } }
+function saveJSON_(k, v){ localStorage.setItem(k, JSON.stringify(v||{})); }
+function getDeviceType(){ return el('deviceType').value || "Other"; }
+function getMake(){ return el('make').value || "Other"; }
+
+function addCustomModel(make, type, model){
+  const m=(model||"").trim(); if(!m) return;
+  const obj=loadJSON_(LS_CUSTOM_MODELS);
+  obj[make]=obj[make]||{}; obj[make][type]=obj[make][type]||[];
+  obj[make][type]=obj[make][type].filter(x=>x.toLowerCase()!==m.toLowerCase());
+  obj[make][type].unshift(m);
+  if(obj[make][type].length>50) obj[make][type]=obj[make][type].slice(0,50);
+  saveJSON_(LS_CUSTOM_MODELS, obj);
+}
+
+function addRecentModel(make, type, model){
+  const m=(model||"").trim(); if(!m) return;
+  const obj=loadJSON_(LS_RECENTS);
+  obj[make]=obj[make]||{}; obj[make][type]=obj[make][type]||[];
+  obj[make][type]=obj[make][type].filter(x=>x.toLowerCase()!==m.toLowerCase());
+  obj[make][type].unshift(m);
+  if(obj[make][type].length>10) obj[make][type]=obj[make][type].slice(0,10);
+  saveJSON_(LS_RECENTS, obj);
+}
+
+function setLastModel(make, type, model){
+  const m=(model||"").trim(); if(!m) return;
+  const obj=loadJSON_(LS_LAST_MODEL);
+  obj[make]=obj[make]||{}; obj[make][type]=m;
+  saveJSON_(LS_LAST_MODEL, obj);
+}
+
+function getLastModel(make, type){
+  const obj=loadJSON_(LS_LAST_MODEL);
+  return (obj[make] && obj[make][type]) ? obj[make][type] : "";
+}
+
+function updateSameModelButton(){
+  const last=getLastModel(getMake(), getDeviceType());
+  const btn=el('sameModelBtn');
+  btn.disabled=!last;
+  btn.textContent=last ? `Same model: ${last}` : "Same model as last";
+}
+
+function buildModelList(make, type){
+  const base=(BASE_MODELS[make] && BASE_MODELS[make][type]) ? BASE_MODELS[make][type] : [];
+  const custom=loadJSON_(LS_CUSTOM_MODELS);
+  const learned=(custom[make] && custom[make][type]) ? custom[make][type] : [];
+  const merged=[...learned, ...base];
+  const seen=new Set();
+  return merged.filter(x=>{
+    const k=x.toLowerCase();
+    if(seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+}
+
+function populateModelPickers(){
+  const make=getMake(), type=getDeviceType();
+  const models=buildModelList(make, type);
+
+  const pick=el('modelPick');
+  pick.innerHTML=`<option value="">-- Select a model to auto-fill (or type below) --</option>`;
+  models.forEach(m=>{
+    const o=document.createElement('option'); o.value=m; o.textContent=m; pick.appendChild(o);
+  });
+
+  const rec=loadJSON_(LS_RECENTS);
+  const recList=(rec[make] && rec[make][type]) ? rec[make][type] : [];
+  const rp=el('recentPick');
+  rp.innerHTML=`<option value="">-- Recent models --</option>`;
+  recList.forEach(m=>{
+    const o=document.createElement('option'); o.value=m; o.textContent=m; rp.appendChild(o);
+  });
+
+  el('modelHint').textContent = `Showing ${type} models for ${make}.`;
+  updateSameModelButton();
+}
+
+function learnModelIfNew_(){
+  const make=getMake(), type=getDeviceType();
+  const model=el('model').value.trim();
+  if(!model) return;
+  const list=buildModelList(make, type).map(x=>x.toLowerCase());
+  if(!list.includes(model.toLowerCase())) addCustomModel(make, type, model);
+  addRecentModel(make, type, model);
+  setLastModel(make, type, model);
+  populateModelPickers();
+}
+
+/*************************************************
+ * AUTODETECT (best-effort)
+ *************************************************/
+function detectModelFromText_(t){
+  const s = norm_(t);
+  const ciscoModel = s.match(/\bWS-C[0-9A-Z\-]+\b/i);
+  if (ciscoModel) return ciscoModel[0].toUpperCase();
+  const moto = s.match(/\bTW[-\s]?511\b/i);
+  if (moto) return "TW-511";
+  const jun = s.match(/\b(EX|QFX)\d{3,4}\b/i);
+  if (jun) return jun[0].toUpperCase();
+  const arubaCx = s.match(/\bCX\s?\d{4}\b/i);
+  if (arubaCx) return arubaCx[0].toUpperCase().replace(/\s+/g,' ');
+  const arubaAp = s.match(/\bAP-\d{3}\b/i);
+  if (arubaAp) return arubaAp[0].toUpperCase();
+  return "";
+}
+
+function detectMakeFromModel_(model){
+  const m = norm_(model).toUpperCase();
+  if (!m) return "";
+  if (m.startsWith("WS-C") || m.includes("CATALYST") || m.includes("NEXUS")) return "Cisco";
+  if (m.startsWith("EX") || m.startsWith("QFX")) return "Juniper";
+  if (m.startsWith("AP-") || m.includes("CX")) return "Aruba";
+  if (m === "TW-511") return "Motorola";
+  if (m.includes("ISAM") || m.includes("TA5000") || m.includes("E7") || m.includes("MA5600") || m.includes("MA5800")) return "DSLAM";
+  return "";
+}
+
+const OUI_HINTS = {
+  "001B0C":"Cisco","0026C8":"Cisco","0C2724":"Cisco","F0F7E7":"Cisco",
+  "0010DB":"Juniper","5C5B35":"Juniper",
+  "000B86":"Aruba","D89E3F":"Aruba",
+  "F09FC2":"Ubiquiti","24A43C":"Ubiquiti",
+  "000D58":"Ruckus",
+  "FCA13E":"Fortinet",
+  "FC0A81":"Motorola"
+};
+
+function detectMakeFromMac_(mac){
+  const hex = (mac||"").toUpperCase().replace(/[^0-9A-F]/g,'');
+  if (hex.length !== 12) return "";
+  const oui = hex.slice(0,6);
+  return OUI_HINTS[oui] || "";
+}
+
+function detectDeviceTypeFromModel_(model, make){
+  const m = norm_(model).toUpperCase();
+  const mk = norm_(make);
+  if (mk === "DSLAM") return "Switch";
+  if (m.startsWith("AP-") || m.includes("AIR-") || m.startsWith("U6-") || m.startsWith("U7-")) return "AP";
+  if (mk === "Motorola") return "Other";
+  return "Switch";
+}
+
+function applyAutoDetect_(decodedText){
+  const raw = norm_(decodedText);
+
+  const modelFromText = detectModelFromText_(raw);
+  let makeGuess = "";
+
+  if (modelFromText) makeGuess = detectMakeFromModel_(modelFromText);
+  if (!makeGuess && looksLikeMac(raw)) makeGuess = detectMakeFromMac_(raw);
+
+  if (makeGuess) el('make').value = makeGuess;
+  if (modelFromText && !el('model').value.trim()) el('model').value = modelFromText;
+
+  const typeGuess = detectDeviceTypeFromModel_(el('model').value, el('make').value);
+  if (typeGuess) el('deviceType').value = typeGuess;
+
+  populateModelPickers();
+  updateSubmitEnabled();
+}
+
+/*************************************************
+ * DUPLICATE UI
+ *************************************************/
+let dupeState = { ok:true, issues:[] };
+let dupeTimer = null;
+
+function showDupe(issues){
+  const box=el('dupeBox');
+  const list=el('dupeList');
+  if(!issues || issues.length===0){
+    box.style.display="none"; list.innerHTML=""; box.classList.remove("bad"); return;
+  }
+  const isAsset=issues.some(x=>x.field==='assetTag');
+  box.style.display="block";
+  box.classList.toggle("bad", isAsset);
+  list.innerHTML=issues.map(i=>`• ${i.message}`).join("<br>");
+}
+
+function debouncedDupeCheck(){
+  if(dupeTimer) clearTimeout(dupeTimer);
+  dupeTimer=setTimeout(runDupeCheck, 250);
+}
+
+async function runDupeCheck(){
+  try{
+    const serial=el('serial').value.trim();
+    const mac=el('mac').value.trim();
+    const assetTag=el('assetTag').value.trim(); // optional
+
+    const result = await apiCheckDuplicates(serial, mac, assetTag);
+    dupeState = result || { ok:true, issues:[] };
+    showDupe(dupeState.issues||[]);
+    updateSubmitEnabled();
+  }catch{
+    dupeState = { ok:true, issues:[] };
+    showDupe([]);
+    updateSubmitEnabled();
+  }
+}
+
+/*************************************************
+ * VALIDATION (AssetTag NOT required)
+ *************************************************/
+function updateSubmitEnabled(){
+  const deviceType=el('deviceType').value.trim();
+  const make=el('make').value.trim();
+  const model=el('model').value.trim();
+  const serial=el('serial').value.trim();
+  const mac=el('mac').value.trim();
+
+  const hasSerialOrMac=!!(serial||mac);
+  const requiredOK=deviceType && make && model && hasSerialOrMac;
+
+  const noDupes=(dupeState && dupeState.ok);
+  el('submitBtn').disabled = !(requiredOK && noDupes);
+}
+
+/*************************************************
+ * RACK AUDIT MODE — Scan Stage (Asset optional)
+ *************************************************/
+let scanStage = "id"; // "id" -> "asset"
+function stageHint_(){
+  el('stageHint').textContent =
+    (scanStage === "id")
+      ? "Stage 1: Scan SERIAL (preferred) or MAC."
+      : "Stage 2: Asset Tag (optional) — submit anytime.";
+}
+function beep_(){
+  try{
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 880;
+    gain.gain.value = 0.05;
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start();
+    setTimeout(()=>{ osc.stop(); ctx.close(); }, 80);
+  }catch{}
+  try{ navigator.vibrate?.(60); }catch{}
+}
+
+/*************************************************
+ * CAMERA + ZXING + FORCE FOCUS (best effort)
+ *************************************************/
+let reader = null;
+let scanning = false;
+let ocrBusy = false;
+let ocrTimer = null;
+
+let activeStream = null;
+let activeTrack = null;
+
+function buildVideoConstraints_(){
+  return {
+    video: {
+      facingMode: { ideal: "environment" },
+      width:  { ideal: 1280 },
+      height: { ideal: 720 }
+    },
+    audio: false
+  };
+}
+
+async function forceContinuousFocus_(track){
+  if (!track || !track.getCapabilities) return;
+  const caps = track.getCapabilities();
+  const adv = [];
+
+  if (caps.focusMode && Array.isArray(caps.focusMode)) {
+    if (caps.focusMode.includes("continuous")) adv.push({ focusMode: "continuous" });
+    else if (caps.focusMode.includes("auto")) adv.push({ focusMode: "auto" });
+  }
+
+  if (caps.zoom) {
+    const zMin = caps.zoom.min ?? 1;
+    const zMax = caps.zoom.max ?? 1;
+    const z = Math.min(zMax, Math.max(zMin, 1.2));
+    adv.push({ zoom: z });
+  }
+
+  if (!adv.length) return;
+  try { await track.applyConstraints({ advanced: adv }); } catch {}
+}
+
+async function startScan(){
+  if (!ACCESS_KEY) return;
+  if (scanning) return;
+
+  scanning = true;
+  setStatus("Starting camera…", "warn");
+  stageHint_();
+
+  try{
+    if (!reader) reader = new ZXing.BrowserMultiFormatReader();
+
+    activeStream = await navigator.mediaDevices.getUserMedia(buildVideoConstraints_());
+    el("video").srcObject = activeStream;
+
+    activeTrack = activeStream.getVideoTracks()[0] || null;
+    await forceContinuousFocus_(activeTrack);
+
+    if (ocrTimer) clearTimeout(ocrTimer);
+    ocrTimer = setTimeout(async ()=>{
+      if (scanning && !ocrBusy) await runOCRFallback("auto");
+    }, 1400);
+
+    await reader.decodeFromStream(
+      activeStream,
+      el("video"),
+      (result, err) => {
+        if (result?.text){
+          if (ocrTimer) clearTimeout(ocrTimer);
+          try{ reader.reset(); }catch{}
+          scanning = false;
+
+          handleDecodedText_(result.text, "barcode");
+          setTimeout(()=>startScan(), 120);
+        }
+      }
+    );
+
+    setStatus("Camera ready — scan now.", "warn");
+  }catch(e){
+    scanning = false;
+    setStatus("Camera error: " + (e.message || e), "bad");
+    stopScan();
+  }
+}
+
+function stopScan(){
+  try{ reader?.reset(); }catch{}
+  scanning = false;
+  if (ocrTimer) clearTimeout(ocrTimer);
+
+  try{ if (activeStream) activeStream.getTracks().forEach(t => t.stop()); }catch{}
+  activeStream = null;
+  activeTrack = null;
+  setStatus("Stopped.", "");
+}
+
+/*************************************************
+ * OCR (improved make/model/serial/mac for Cisco + Motorola)
+ *************************************************/
+function cleanOcr_(s){
+  return (s||"").replace(/[|]/g,'I').replace(/\s+/g,' ').trim();
+}
+
+function extractFromOcrText_(text){
+  const raw = cleanOcr_(text);
+  const t = raw.toUpperCase();
+
+  // MAKE keywords (photo OCR gets brand words more reliably)
+  let make = "";
+  if (/\bMOTOROLA\b/.test(t) || /\bMOTOROLA\s+SOLUTIONS\b/.test(t)) make = "Motorola";
+  else if (/\bCISCO\b/.test(t) || /\bCISCO\s+SYSTEMS\b/.test(t)) make = "Cisco";
+  else if (/\bUBIQUITI\b/.test(t)) make = "Ubiquiti";
+  else if (/\bARUBA\b/.test(t) || /\bHPE\b/.test(t)) make = "Aruba";
+  else if (/\bJUNIPER\b/.test(t)) make = "Juniper";
+
+  // MAC
+  const mac =
+    (t.match(/([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}/) || [])[0] ||
+    (t.match(/\b[0-9A-F]{12}\b/) || [])[0] ||
+    "";
+
+  // SERIAL (prefer explicit tags)
+  let serial = "";
+  const snTag = t.match(/\bS\/?N[:\s\-]*([A-Z0-9]{8,24})\b/);
+  if (snTag && snTag[1]) serial = snTag[1];
+
+  if (!serial) {
+    const sn2 = t.match(/\bSN[:\s\-]*([A-Z0-9]{8,24})\b/);
+    if (sn2 && sn2[1]) serial = sn2[1];
+  }
+
+  if (!serial) {
+    const c = t.match(/\bFOC[0-9A-Z]{6,18}\b/);
+    if (c) serial = c[0];
+  }
+
+  if (!serial) {
+    const n = t.match(/\b\d{10,18}\b/);
+    if (n) serial = n[0];
+  }
+
+  // MODEL
+  let model = "";
+  const ciscoWs = t.match(/\bWS-C[0-9A-Z\-]+\b/);
+  if (ciscoWs) model = ciscoWs[0];
+  if (!model && /\bTW[-\s]?511\b/.test(t)) model = "TW-511";
+  if (!model){
+    const jun = t.match(/\b(EX|QFX)\d{3,4}\b/);
+    if (jun) model = jun[0];
+  }
+  if (!model){
+    const arubaAp = t.match(/\bAP-\d{3}\b/);
+    if (arubaAp) model = arubaAp[0];
+  }
+  if (!model){
+    const arubaCx = t.match(/\bCX\s?\d{4}\b/);
+    if (arubaCx) model = arubaCx[0].replace(/\s+/g," ");
+  }
+
+  if (!make && model) make = detectMakeFromModel_(model);
+
+  return {
+    rawText: raw,
+    make,
+    model: model ? model.toUpperCase() : "",
+    serial: serial || "",
+    mac: mac ? formatMac(mac) : ""
+  };
+}
+
+async function ocrCanvasToExtract_(canvas){
+  const { data } = await Tesseract.recognize(
+    canvas,
+    "eng",
+    {
+      tessedit_pageseg_mode: "6",
+      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:-./ ",
+      preserve_interword_spaces: "1"
+    }
+  );
+  const text = cleanOcr_(data.text || "");
+  if (!text) return { make:"", model:"", serial:"", mac:"", rawText:"" };
+  return extractFromOcrText_(text);
+}
+
+function applyExtract_(ex){
+  if (!ex) return;
+
+  if (ex.make && !el('make').value.trim()) el('make').value = ex.make;
+  if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
+
+  if (ex.model) applyAutoDetect_(ex.model);
+
+  // serial preferred
+  if (ex.serial && !el('serial').value.trim()) el('serial').value = ex.serial;
+  if (!el('serial').value.trim() && ex.mac && !el('mac').value.trim()) el('mac').value = ex.mac;
+
+  if (scanStage === "id" && (el('serial').value.trim() || el('mac').value.trim())){
+    scanStage = "asset";
+    stageHint_();
+    beep_();
+    setStatus("Captured from OCR — Asset Tag optional. You can submit now.", "ok");
+  } else {
+    setStatus("OCR complete — review fields.", "ok");
+  }
+}
+
+function cropCanvasFromVideo_(video){
+  if (!video || !video.videoWidth) throw new Error("Video not ready.");
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+
+  const full = document.createElement("canvas");
+  full.width = vw; full.height = vh;
+  const ctx = full.getContext("2d");
+  ctx.drawImage(video, 0, 0, vw, vh);
+
+  // crop wide center band
+  const cropX = Math.floor(vw * 0.05);
+  const cropW = Math.floor(vw * 0.90);
+  const cropY = Math.floor(vh * 0.28);
+  const cropH = Math.floor(vh * 0.55);
+
+  const crop = document.createElement("canvas");
+  crop.width = cropW; crop.height = cropH;
+  const cctx = crop.getContext("2d");
+  cctx.drawImage(full, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+  // contrast boost
+  const img = cctx.getImageData(0,0,cropW,cropH);
+  const d = img.data;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i], g=d[i+1], b=d[i+2];
+    const y = (0.299*r + 0.587*g + 0.114*b);
+    const v = y > 165 ? 255 : (y < 85 ? 0 : y);
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  cctx.putImageData(img,0,0);
+
+  return crop;
+}
+
+async function runOCRFallback(mode, imageCanvas){
+  if (ocrBusy) return;
+  ocrBusy = true;
+  try{
+    setStatus(mode === "auto" ? "Tiny label — reading text…" : "OCR reading… hold steady.", "warn");
+
+    const src = imageCanvas || cropCanvasFromVideo_(el("video"));
+    const ex = await ocrCanvasToExtract_(src);
+
+    if (!ex.rawText) {
+      setStatus("OCR found nothing — move closer / better light.", "warn");
+      return;
+    }
+
+    applyExtract_(ex);
+    populateModelPickers();
+    updateSubmitEnabled();
+    debouncedDupeCheck();
+
+  }catch(e){
+    setStatus("OCR error: " + (e.message || e), "bad");
+  }finally{
+    ocrBusy = false;
+  }
+}
+
+/*************************************************
+ * TAKE PHOTO OCR (native autofocus)
+ *************************************************/
+async function runOCRFromFile_(file){
+  if (!file) return;
+
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+
+  await new Promise((resolve, reject)=>{
+    img.onload = resolve;
+    img.onerror = reject;
+    img.src = url;
+  });
+
+  const full = document.createElement("canvas");
+  full.width = img.naturalWidth;
+  full.height = img.naturalHeight;
+  const ctx = full.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+
+  URL.revokeObjectURL(url);
+
+  // preprocess (full image)
+  const prep = document.createElement("canvas");
+  prep.width = full.width; prep.height = full.height;
+  const pctx = prep.getContext("2d");
+  pctx.drawImage(full,0,0);
+
+  const imgd = pctx.getImageData(0,0,prep.width,prep.height);
+  const d = imgd.data;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i], g=d[i+1], b=d[i+2];
+    const y = (0.299*r + 0.587*g + 0.114*b);
+    const v = y > 165 ? 255 : (y < 85 ? 0 : y);
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  pctx.putImageData(imgd,0,0);
+
+  await runOCRFallback("manual", prep);
+}
+
+/*************************************************
+ * HANDLE DECODED TEXT (barcode/QR)
+ *************************************************/
+function handleDecodedText_(text, source){
+  const raw = norm_(text);
+  el('techHint').textContent = `Last input: ${source} → ${raw}`;
+
+  applyAutoDetect_(raw);
+
+  if (scanStage === "id"){
+    if (looksLikeMac(raw)){
+      el('mac').value = formatMac(raw);
+      setStatus("MAC captured — Asset Tag optional. You can submit now.", "ok");
+      beep_();
+      scanStage = "asset";
+    } else {
+      const m = detectModelFromText_(raw);
+      if (m){
+        if (!el('model').value.trim()) el('model').value = m;
+        setStatus("Model detected — now scan Serial/MAC.", "warn");
+        beep_();
+      } else {
+        el('serial').value = raw;
+        setStatus("Serial captured — Asset Tag optional. You can submit now.", "ok");
+        beep_();
+        scanStage = "asset";
+      }
+    }
+  } else {
+    // asset stage: treat scan as asset tag, but it's optional
+    el('assetTag').value = raw;
+    setStatus("Asset Tag captured — ready to submit.", "ok");
+    beep_();
+  }
+
+  stageHint_();
+  updateSubmitEnabled();
+  debouncedDupeCheck();
+}
+
+/*************************************************
+ * TORCH (Flashlight)
+ *************************************************/
+let torchOn = false;
+
+async function toggleTorch(){
+  const video = el('video');
+  const stream = video && video.srcObject ? video.srcObject : activeStream;
+  if (!stream){
+    setStatus("Flashlight: camera not running yet.", "warn");
+    return;
+  }
+  const track = stream.getVideoTracks()[0];
+  if (!track) return;
+
+  const caps = track.getCapabilities ? track.getCapabilities() : null;
+  if (!caps || !caps.torch){
+    setStatus("Flashlight not supported on this device/browser.", "warn");
+    return;
+  }
+
+  torchOn = !torchOn;
+  try{
+    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+    setStatus(torchOn ? "Flashlight ON" : "Flashlight OFF", "ok");
+  }catch(e){
+    torchOn = false;
+    setStatus("Flashlight error: " + (e.message || e), "warn");
+  }
+}
+
+/*************************************************
+ * SUBMIT + RESET
+ *************************************************/
+async function submit(){
+  const macVal = el('mac').value.trim();
+  if (looksLikeMac(macVal)) el('mac').value = formatMac(macVal);
+
+  learnModelIfNew_();
+
+  const payload={
+    deviceType: el('deviceType').value.trim(),
+    make: el('make').value.trim(),
+    model: el('model').value.trim(),
+    serial: el('serial').value.trim(),
+    mac: el('mac').value.trim(),
+    assetTag: el('assetTag').value.trim(),           // optional
+    noAssetTag: el('noAssetTag').checked             // optional flag
+  };
+
+  try{
+    setStatus("Saving…", "warn");
+    const res = await apiSubmit(payload);
+    setStatus(res.message + " — next device.", "ok");
+    beep_();
+
+    el('serial').value="";
+    el('mac').value="";
+    el('assetTag').value="";
+    el('noAssetTag').checked=false;
+
+    scanStage="id";
+    stageHint_();
+
+    dupeState={ ok:true, issues:[] };
+    showDupe([]);
+    updateSubmitEnabled();
+
+  }catch(err){
+    setStatus(err.message || String(err), "bad");
+    debouncedDupeCheck();
+  }
+}
+
+/*************************************************
+ * EVENTS
+ *************************************************/
+el('deviceType').addEventListener('change', ()=>{ populateModelPickers(); updateSubmitEnabled(); });
+el('make').addEventListener('change', ()=>{ populateModelPickers(); updateSubmitEnabled(); });
+
+el('modelPick').addEventListener('change', ()=>{ const v=el('modelPick').value; if(v) el('model').value=v; updateSubmitEnabled(); });
+el('recentPick').addEventListener('change', ()=>{ const v=el('recentPick').value; if(v) el('model').value=v; updateSubmitEnabled(); });
+
+el('sameModelBtn').addEventListener('click', ()=>{
+  const last=getLastModel(getMake(), getDeviceType());
+  if(last){ el('model').value=last; updateSubmitEnabled(); }
+});
+el('unknownModelBtn').addEventListener('click', ()=> el('model').focus());
+
+['model','serial','mac','assetTag'].forEach(id=>{
+  el(id).addEventListener('input', ()=>{ updateSubmitEnabled(); debouncedDupeCheck(); });
+});
+
+el('noAssetTag').addEventListener('change', ()=>{
+  if (el('noAssetTag').checked) el('assetTag').value="";
+  stageHint_();
+  updateSubmitEnabled();
+  debouncedDupeCheck();
+});
+
+el('model').addEventListener('blur', ()=>{ learnModelIfNew_(); updateSubmitEnabled(); });
+
+el('startBtn').addEventListener('click', ()=>startScan());
+el('stopBtn').addEventListener('click', ()=>stopScan());
+el('submitBtn').addEventListener('click', ()=>submit());
+el('torchBtn').addEventListener('click', ()=>toggleTorch());
+el('ocrBtn').addEventListener('click', async ()=>{ await runOCRFallback("manual"); });
+
+el("video").addEventListener("click", async ()=>{
+  try{
+    if (!activeTrack) return;
+    setStatus("Refocusing… tap again if needed.", "warn");
+    await forceContinuousFocus_(activeTrack);
+    setTimeout(()=>setStatus("Scanning…", ""), 500);
+  }catch{}
+});
+
+el("photoBtn").addEventListener("click", ()=> el("photoInput").click());
+el("photoInput").addEventListener("change", async (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  await runOCRFromFile_(f);
+  e.target.value = "";
+});
+
+window.addEventListener('load', ()=>{
+  lockIfNoKey_();
+  populateModelPickers();
+  scanStage="id";
+  stageHint_();
+  updateSubmitEnabled();
+  if (ACCESS_KEY) setStatus("Tap START SCANNING (or TAKE PHOTO for best focus).", "");
+});
+</script>
+</body>
+</html>      <div class="field">
         <label>Quick buttons</label>
         <div class="pillRow">
           <button id="sameModelBtn" class="btnSecondary pill" type="button">Same model as last</button>
