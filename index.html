@@ -1,144 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Network Asset Scan</title>
+
+  <style>
+    :root{
+      --bg:#0b1220; --card:#111a2c; --text:#e5e7eb; --muted:#9ca3af;
+      --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --soft:rgba(255,255,255,.08);
+      --border:rgba(255,255,255,.12);
+    }
+    body{ margin:0; padding:12px; font-family:Arial, sans-serif; background:var(--bg); color:var(--text); }
+    h1{ font-size:18px; margin:0 0 6px 0; }
+    .sub{ font-size:12px; color:var(--muted); margin-bottom:10px; line-height:1.35; }
+    .card{ background:var(--card); border:1px solid var(--soft); border-radius:14px; padding:12px; }
+    .field{ margin:10px 0; }
+    label{ display:block; font-size:12px; margin-bottom:4px; color:var(--muted); }
+    input, select, button{
+      width:100%; padding:12px; font-size:15px; border-radius:12px;
+      border:1px solid var(--border); background:rgba(0,0,0,.15); color:var(--text);
+      box-sizing:border-box;
+    }
+    input::placeholder{ color:rgba(229,231,235,.35); }
+    .row{ display:flex; gap:10px; }
+    .row > div{ flex:1; }
+    button{ border:none; cursor:pointer; font-weight:800; }
+    .btnPrimary{ background:var(--ok); color:#06210f; }
+    .btnSecondary{ background:rgba(255,255,255,.08); color:var(--text); border:1px solid rgba(255,255,255,.14); }
+    .btnDanger{ background:rgba(239,68,68,.12); color:#fecaca; border:1px solid rgba(239,68,68,.45); }
+    .big{ padding:14px; font-size:16px; }
+    .msg{ margin-top:10px; font-size:13px; }
+    .ok{ color:#86efac; } .warn{ color:#fcd34d; } .bad{ color:#fca5a5; }
+    .tiny{ font-size:12px; color:var(--muted); margin-top:6px; line-height:1.35; }
+    .lock{ opacity:.35; pointer-events:none; filter:grayscale(.5); }
+    .checkRow{ display:flex; align-items:center; gap:10px; margin-top:8px; }
+    .checkRow input{ width:auto; transform:scale(1.2); }
+    .preview{
+      width:100%; max-height:360px; border-radius:12px; border:1px solid rgba(255,255,255,.10);
+      background:#000; object-fit:contain;
+    }
+    .btnRow{ display:flex; gap:10px; }
+    .btnRow button{ flex:1; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+
+  <!-- OCR -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+
+<body>
+  <h1>Network Asset Scan</h1>
+  <div class="sub">
+    <b>Default mode:</b> Take a photo (native camera autofocus) → OCR reads <b>Serial + Model/Make</b>.
+    Serial is preferred. If no Serial is found but MAC is found, MAC will be placed into Serial.
+    <br><br>
+    <b>Asset Tag is optional and never required.</b>
+  </div>
+
+  <div id="app" class="card">
+    <div class="row">
+      <div class="field">
+        <label for="deviceType">Device Type *</label>
+        <select id="deviceType">
+          <option value="Switch">Switch</option>
+          <option value="AP">AP</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="make">Make *</label>
+        <select id="make">
+          <option value="Cisco">Cisco</option>
+          <option value="Motorola">Motorola</option>
+          <option value="Juniper">Juniper</option>
+          <option value="Aruba">Aruba</option>
+          <option value="Fortinet">Fortinet</option>
+          <option value="Ruckus">Ruckus</option>
+          <option value="Ubiquiti">Ubiquiti</option>
+          <option value="TP-Link">TP-Link</option>
+          <option value="Netgear">Netgear</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="model">Model *</label>
+      <input id="model" type="text" placeholder="Model (OCR will try to fill)" />
+      <div class="tiny">Motorola TW-511 is treated as <b>Switch</b>.</div>
+    </div>
+
+    <div class="field">
+      <label for="serial">Serial * (MAC will be used only if Serial not found)</label>
+      <input id="serial" type="text" placeholder="Serial (OCR fills this)" />
+      <div class="tiny">If OCR finds MAC but not Serial, it will put MAC into this Serial field.</div>
+    </div>
+
+    <div class="field">
+      <label for="assetTag">Company Asset Tag (optional)</label>
+      <input id="assetTag" type="text" placeholder="Optional (type). Never required." />
+      <div class="checkRow">
+        <input id="noAsset" type="checkbox" checked />
+        <label for="noAsset" style="margin:0;">No Asset Tag (leave blank). Asset Tag is never required.</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Photo (native camera autofocus)</label>
+      <input id="photoInput" type="file" accept="image/*" capture="environment" />
+      <div class="btnRow" style="margin-top:10px;">
+        <button id="takePhotoBtn" class="btnPrimary big" type="button">TAKE PHOTO (DEFAULT)</button>
+        <button id="retakeBtn" class="btnSecondary big" type="button">RETAKE</button>
+      </div>
+      <img id="preview" class="preview" alt="preview" style="margin-top:10px; display:none;" />
+      <div class="tiny" id="photoHint">Tip: fill the label area in the frame. If text is tiny, get closer and keep it flat (no glare).</div>
+    </div>
+
+    <div class="field">
+      <label>OCR output (debug)</label>
+      <div id="ocrOut" class="tiny mono" style="max-height:160px; overflow:auto; padding:10px; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"></div>
+    </div>
+
+    <div class="btnRow" style="margin-top:10px;">
+      <button id="ocrAgainBtn" class="btnSecondary big" type="button">RUN OCR AGAIN</button>
+      <button id="clearBtn" class="btnDanger big" type="button">CLEAR FIELDS</button>
+    </div>
+
+    <button id="submitBtn" class="btnPrimary big" type="button" style="margin-top:10px;">
+      SUBMIT TO SHEET
+    </button>
+
+    <div id="status" class="msg"></div>
+  </div>
+
+<script>
 /*************************************************
- * scan2 — Backend API for Network Asset Scanner
- * Reliable for GitHub Pages + iPhone/iPad/Android
- * - GET endpoints: ping, checkDuplicates, submit
- * - Writes to tabs: Switches, AP, Other
- * - AssetTag is NEVER required
+ * CONFIG
  *************************************************/
+const API_BASE = "https://script.google.com/macros/s/AKfycbwlpaGqxw08bZ7jC2uxjWbOUq5Ru3SRrXHdPyTZcBq39y7vZm5nGsNjzP2LZJQTj_qUNw/exec";
+const ACCESS_KEY = new URLSearchParams(location.search).get("k") || "FIT-SCAN-2026";
 
-const SPREADSHEET_ID = "10qscpdita1SHx8lD_AMNusvMe9gKiBIWg-xussXzuxc"; // your sheet id
-const ACCESS_KEY     = "FIT-SCAN-2026"; // your key
+function el(id){ return document.getElementById(id); }
+function setStatus(msg, cls){ const s=el('status'); s.textContent=msg||""; s.className="msg "+(cls||""); }
+function norm_(s){ return (s||"").toString().trim(); }
 
-function requireKey_(key) {
-  if (!key || key !== ACCESS_KEY) throw new Error("Unauthorized — invalid access key.");
+/*************************************************
+ * BASIC DETECT (Cisco/Motorola focused)
+ *************************************************/
+function detectMakeFromText_(t){
+  const s = (t||"").toUpperCase();
+  if (s.includes("CISCO")) return "Cisco";
+  if (s.includes("MOTOROLA")) return "Motorola";
+  // Cisco labels often include "WS-C" or "CATALYST"
+  if (/\bWS-C[0-9A-Z\-]+\b/i.test(s) || s.includes("CATALYST")) return "Cisco";
+  // Motorola label shows "TW-511"
+  if (/\bTW-511\b/i.test(s) || /\bTW\s*-\s*511\b/i.test(s)) return "Motorola";
+  return "";
 }
 
-function getSS_() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID);
+function detectModelFromText_(t){
+  const s = (t||"").toUpperCase();
+  const cisco = s.match(/\bWS-C[0-9A-Z\-]+\b/);
+  if (cisco) return cisco[0].toUpperCase();
+  if (/\bTW\s*-\s*511\b/i.test(s)) return "TW-511";
+  const tw = s.match(/\bTW-\d{3,4}\b/);
+  if (tw) return tw[0].toUpperCase();
+  // Catalyst 9xxx sometimes appears
+  const cat = s.match(/\bCATALYST\s*\d{4}\b/);
+  if (cat) return cat[0].replace(/\s+/g," ").trim();
+  return "";
 }
 
-function getSheetByNameLoose_(ss, name) {
-  const target = (name || "").toString().trim().toLowerCase();
-  return ss.getSheets().find(s => (s.getName() || "").toString().trim().toLowerCase() === target) || null;
-}
+function applyAutoDetectFromOcr_(text){
+  const make = detectMakeFromText_(text);
+  const model = detectModelFromText_(text);
 
-function json_(obj) {
-  return ContentService
-    .createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
-}
+  if (make) el("make").value = make;
+  if (model) el("model").value = model;
 
-function pick_(v) {
-  return (v === undefined || v === null) ? "" : String(v);
+  // Your rule: Motorola TW-511 is Switch (not Other)
+  if ((make === "Motorola" && model === "TW-511") || model === "TW-511") {
+    el("deviceType").value = "Switch";
+    el("make").value = "Motorola";
+    el("model").value = "TW-511";
+  }
 }
 
 /*************************************************
- * Duplicate check across Switches/AP/Other
- * - Asset tag is NOT required and NOT used to block
- * - We only block if SERIAL duplicates (your preference)
+ * SERIAL / MAC EXTRACTION (prefer serial)
  *************************************************/
-function checkDuplicates_(data) {
-  const ss = getSS_();
-  const sheetNames = ["Switches", "AP", "Other"];
+function cleanOcr_(s){
+  return (s||"")
+    .replace(/[|]/g,'I')
+    .replace(/\u00A0/g,' ')
+    .replace(/[“”]/g,'"')
+    .replace(/[‘’]/g,"'")
+    .replace(/\s+/g,' ')
+    .trim();
+}
 
-  const serial = pick_(data.serial).trim();
+function formatMac_(s){
+  const hex=(s||'').toUpperCase().replace(/[^0-9A-F]/g,'');
+  if(hex.length!==12) return "";
+  return hex.match(/.{1,2}/g).join(':');
+}
 
-  let issues = [];
+function extractSerialAndMac_(text){
+  const raw = cleanOcr_(text);
+  const t = raw.toUpperCase();
 
+  // Motorola label patterns:
+  // "S/N: 14113622401388"
+  // "MAC: FC0A81AA5D60"
+  const sn1 = t.match(/\bS\/N[:\s]*([A-Z0-9]{8,20})\b/);
+  const sn2 = t.match(/\bSN[:\s]*([A-Z0-9]{8,20})\b/);
+
+  let serial = (sn1 && sn1[1]) || (sn2 && sn2[1]) || "";
+
+  // Cisco sometimes: "PID ... VID ... SN FOC1746Y4AN"
   if (!serial) {
-    return { ok: true, issues: [] };
+    const ciscoSN = t.match(/\bSN[:\s]*([A-Z0-9]{8,20})\b/);
+    if (ciscoSN && ciscoSN[1]) serial = ciscoSN[1];
+  }
+  if (!serial) {
+    const pidVidSn = t.match(/\bPID\b.*?\bVID\b.*?\bSN[:\s]*([A-Z0-9]{8,20})\b/);
+    if (pidVidSn && pidVidSn[1]) serial = pidVidSn[1];
   }
 
-  sheetNames.forEach(name => {
-    const sh = getSheetByNameLoose_(ss, name);
-    if (!sh) return;
+  // MAC patterns
+  let mac =
+    (t.match(/\bMAC[:\s]*([0-9A-F]{12})\b/) || [])[1] ||
+    (t.match(/\b([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}\b/) || [])[0] ||
+    (t.match(/\b[0-9A-F]{12}\b/) || [])[0] ||
+    "";
 
-    const values = sh.getDataRange().getValues();
-    if (!values || values.length < 2) return;
-    values.shift(); // header
+  mac = formatMac_(mac);
 
-    values.forEach((row, idx) => {
-      // Timestamp | Make | Model | Serial | AssetTag
-      const rSerial = pick_(row[3]).trim();
-      if (serial && rSerial && serial === rSerial) {
-        issues.push({ field: "serial", message: `Serial already exists in ${name} (row ${idx + 2})` });
-      }
-    });
-  });
+  // Final rule: prefer serial; if no serial but mac exists, put mac into serial field
+  if (!serial && mac) serial = mac;
 
-  return {
-    ok: issues.length === 0,
-    issues
+  return { serial, mac };
+}
+
+/*************************************************
+ * IMAGE PREP + ROTATION OCR
+ * This fixes "sideways label" failures.
+ *************************************************/
+function imgToCanvas_(img){
+  const c=document.createElement("canvas");
+  c.width=img.naturalWidth || img.width;
+  c.height=img.naturalHeight || img.height;
+  const ctx=c.getContext("2d");
+  ctx.drawImage(img,0,0,c.width,c.height);
+  return c;
+}
+
+function rotateCanvas_(srcCanvas, degrees){
+  const rad = degrees * Math.PI / 180;
+  const sw = srcCanvas.width, sh = srcCanvas.height;
+  const c=document.createElement("canvas");
+  const ctx=c.getContext("2d");
+
+  if (degrees % 180 === 0) {
+    c.width = sw; c.height = sh;
+  } else {
+    c.width = sh; c.height = sw;
+  }
+
+  ctx.translate(c.width/2, c.height/2);
+  ctx.rotate(rad);
+  ctx.drawImage(srcCanvas, -sw/2, -sh/2);
+  return c;
+}
+
+function enhanceCanvas_(srcCanvas){
+  // simple contrast + threshold-ish to help barcode/label text
+  const c=document.createElement("canvas");
+  c.width=srcCanvas.width; c.height=srcCanvas.height;
+  const ctx=c.getContext("2d");
+  ctx.drawImage(srcCanvas,0,0);
+  const img=ctx.getImageData(0,0,c.width,c.height);
+  const d=img.data;
+
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i], g=d[i+1], b=d[i+2];
+    // luminance
+    let y = 0.299*r + 0.587*g + 0.114*b;
+    // boost contrast
+    y = (y - 128) * 1.25 + 128;
+    // clamp
+    y = Math.max(0, Math.min(255, y));
+    // mild thresholding
+    const v = (y > 170) ? 255 : (y < 85 ? 0 : y);
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+  return c;
+}
+
+async function ocrCanvas_(canvas){
+  const { data } = await Tesseract.recognize(
+    canvas,
+    "eng",
+    {
+      // PSM 6: assume a block of text
+      tessedit_pageseg_mode: "6",
+      // allow common label characters
+      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:/.- ",
+      preserve_interword_spaces: "1"
+    }
+  );
+  return cleanOcr_(data.text || "");
+}
+
+async function runPhotoOcr_(){
+  const img = el("preview");
+  if (!img.src) {
+    setStatus("Take a photo first.", "warn");
+    return;
+  }
+
+  setStatus("Reading label… (tries rotations if needed)", "warn");
+
+  // base canvas
+  const base = imgToCanvas_(img);
+
+  // try rotations (0/90/180/270) and enhanced versions
+  const tries = [
+    {deg:0,   enhance:false},
+    {deg:90,  enhance:false},
+    {deg:180, enhance:false},
+    {deg:270, enhance:false},
+    {deg:0,   enhance:true},
+    {deg:90,  enhance:true},
+    {deg:180, enhance:true},
+    {deg:270, enhance:true},
+  ];
+
+  let bestText = "";
+  let bestHit = null;
+
+  for (const t of tries){
+    const rot = rotateCanvas_(base, t.deg);
+    const can = t.enhance ? enhanceCanvas_(rot) : rot;
+
+    const text = await ocrCanvas_(can);
+    if (text && text.length > bestText.length) bestText = text;
+
+    // detect make/model/serial/mac
+    const { serial, mac } = extractSerialAndMac_(text);
+    const make = detectMakeFromText_(text);
+    const model = detectModelFromText_(text);
+
+    const hitScore =
+      (serial ? 5 : 0) +
+      (mac ? 2 : 0) +
+      (make ? 1 : 0) +
+      (model ? 1 : 0);
+
+    if (!bestHit || hitScore > bestHit.score) {
+      bestHit = { score: hitScore, text, serial, mac, make, model, deg:t.deg, enhance:t.enhance };
+    }
+
+    // stop early if we got serial and model (good enough)
+    if (serial && model) break;
+  }
+
+  // show debug
+  el("ocrOut").textContent = bestHit?.text || bestText || "(no text)";
+
+  // apply results
+  if (bestHit) {
+    applyAutoDetectFromOcr_(bestHit.text);
+
+    // SERIAL field gets serial or mac (if serial missing)
+    if (bestHit.serial) el("serial").value = bestHit.serial;
+
+    // model may come from special rules too
+    const model = detectModelFromText_(bestHit.text);
+    if (model) el("model").value = model;
+
+    // Motorola TW-511 enforcement
+    if (el("model").value.trim().toUpperCase() === "TW-511") {
+      el("deviceType").value = "Switch";
+      el("make").value = "Motorola";
+      el("model").value = "TW-511";
+    }
+
+    if (bestHit.serial) {
+      setStatus("Captured from photo OCR.", "ok");
+    } else {
+      setStatus("OCR ran but did not find Serial/MAC. Get closer + reduce glare + keep label flat.", "warn");
+    }
+  } else {
+    setStatus("OCR failed to read anything.", "bad");
+  }
+}
+
+/*************************************************
+ * SUBMIT (GET — most reliable)
+ *************************************************/
+async function apiSubmitGET(payload){
+  const url = new URL(API_BASE);
+  url.searchParams.set("action","submit");
+  url.searchParams.set("k", ACCESS_KEY);
+  url.searchParams.set("deviceType", payload.deviceType || "");
+  url.searchParams.set("make", payload.make || "");
+  url.searchParams.set("model", payload.model || "");
+  url.searchParams.set("serial", payload.serial || "");
+  url.searchParams.set("assetTag", payload.assetTag || "");
+
+  const res = await fetch(url.toString(), { method:"GET", cache:"no-store" });
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || "Submit failed");
+  return j;
+}
+
+function validate_(){
+  const deviceType = el("deviceType").value.trim();
+  const make = el("make").value.trim();
+  const model = el("model").value.trim();
+  const serial = el("serial").value.trim();
+
+  if (!deviceType) return "Device Type required.";
+  if (!make) return "Make required.";
+  if (!model) return "Model required.";
+  if (!serial) return "Serial required (MAC will be used only if serial missing).";
+  return "";
+}
+
+async function submit_(){
+  const err = validate_();
+  if (err) { setStatus(err, "bad"); return; }
+
+  // asset tag is optional
+  if (el("noAsset").checked) el("assetTag").value = "";
+
+  const payload = {
+    deviceType: el("deviceType").value.trim(),
+    make: el("make").value.trim(),
+    model: el("model").value.trim(),
+    serial: el("serial").value.trim(),
+    assetTag: el("assetTag").value.trim()
   };
-}
 
-/*************************************************
- * Save record
- * Columns: Timestamp | Make | Model | Serial | AssetTag
- * AssetTag NEVER required (can be blank)
- *************************************************/
-function submitNetworkAsset_(form) {
-  const ss = getSS_();
-
-  const deviceType = pick_(form.deviceType).trim(); // Switch | AP | Other
-  const make       = pick_(form.make).trim();
-  const model      = pick_(form.model).trim();
-  const serial     = pick_(form.serial).trim();     // REQUIRED
-  const assetTag   = pick_(form.assetTag).trim();   // OPTIONAL
-
-  if (!deviceType) throw new Error("Device Type required.");
-  if (!make) throw new Error("Make required.");
-  if (!model) throw new Error("Model required.");
-  if (!serial) throw new Error("Serial required."); // (MAC should be stuffed into serial by frontend if no serial)
-
-  const sheetName =
-    deviceType === "Switch" ? "Switches" :
-    deviceType === "AP" ? "AP" :
-    "Other";
-
-  const sh = getSheetByNameLoose_(ss, sheetName);
-  if (!sh) throw new Error(`Sheet "${sheetName}" not found. Check tab names.`);
-
-  sh.appendRow([new Date(), make, model, serial, assetTag]);
-
-  return { ok: true, message: "Saved to " + sh.getName() };
-}
-
-/*************************************************
- * API entrypoints
- *
- * GET /exec?action=ping&k=KEY
- * GET /exec?action=checkDuplicates&k=KEY&serial=...
- * GET /exec?action=submit&k=KEY&deviceType=...&make=...&model=...&serial=...&assetTag=...
- *************************************************/
-function doGet(e) {
-  try {
-    const p = (e && e.parameter) ? e.parameter : {};
-    const action = pick_(p.action).trim();
-
-    requireKey_(pick_(p.k));
-
-    if (action === "ping") {
-      return json_({ ok: true, message: "pong" });
-    }
-
-    if (action === "checkDuplicates") {
-      const result = checkDuplicates_({ serial: p.serial });
-      return json_({ ok: true, result });
-    }
-
-    if (action === "submit") {
-      // optional: enforce duplicate block here too
-      const dup = checkDuplicates_({ serial: p.serial });
-      if (!dup.ok) return json_({ ok:false, error: dup.issues.map(x=>x.message).join(" | "), issues: dup.issues });
-
-      const result = submitNetworkAsset_(p);
-      return json_(result);
-    }
-
-    return json_({ ok: false, error: "Unknown action" });
-
-  } catch (err) {
-    return json_({ ok: false, error: (err && err.message) ? err.message : String(err) });
+  try{
+    setStatus("Saving…", "warn");
+    const res = await apiSubmitGET(payload);
+    setStatus(res.message || "Saved.", "ok");
+  }catch(e){
+    setStatus(e.message || String(e), "bad");
   }
 }
+
+/*************************************************
+ * PHOTO UI
+ *************************************************/
+function openCamera_(){
+  el("photoInput").click();
+}
+
+function clear_(){
+  el("model").value = "";
+  el("serial").value = "";
+  el("assetTag").value = "";
+  el("ocrOut").textContent = "";
+  setStatus("", "");
+}
+
+el("takePhotoBtn").addEventListener("click", openCamera_);
+el("retakeBtn").addEventListener("click", ()=>{ el("photoInput").value=""; el("preview").style.display="none"; el("preview").src=""; el("ocrOut").textContent=""; setStatus("Retake photo.", ""); });
+
+el("photoInput").addEventListener("change", async (ev)=>{
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+
+  const url = URL.createObjectURL(f);
+  el("preview").src = url;
+  el("preview").style.display = "block";
+
+  // Wait for image to load then OCR
+  el("preview").onload = async ()=>{
+    try{
+      await runPhotoOcr_();
+    }catch(e){
+      setStatus("OCR error: " + (e.message || e), "bad");
+    }
+  };
+});
+
+el("ocrAgainBtn").addEventListener("click", async ()=>{ await runPhotoOcr_(); });
+el("clearBtn").addEventListener("click", clear_);
+el("submitBtn").addEventListener("click", submit_);
+
+el("noAsset").addEventListener("change", ()=>{
+  if (el("noAsset").checked) el("assetTag").value = "";
+});
+
+window.addEventListener("load", ()=>{
+  setStatus("Ready. Tap TAKE PHOTO (DEFAULT).", "");
+});
+</script>
+</body>
+</html>
