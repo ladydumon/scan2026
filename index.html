@@ -32,6 +32,7 @@
     .big{ padding:14px; font-size:16px; }
     video{
       width:100%; max-height:340px; border-radius:12px; background:#000; border:1px solid rgba(255,255,255,.10);
+      object-fit: cover;
     }
     .msg{ margin-top:10px; font-size:13px; }
     .ok{ color:#86efac; } .warn{ color:#fcd34d; } .bad{ color:#fca5a5; }
@@ -44,22 +45,19 @@
     .lock{ opacity:.35; pointer-events:none; filter:grayscale(.5); }
     .pillRow{ display:flex; gap:10px; flex-wrap:wrap; }
     .pill{ flex:1; min-width: 160px; }
-    .checkRow{ display:flex; align-items:center; gap:10px; margin-top:8px; }
-    .checkRow input{ width:auto; transform:scale(1.2); }
-    .photoRow{ display:flex; gap:10px; margin-top:10px; }
   </style>
 
-  <!-- Barcode/QR -->
+  <!-- ZXing -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
-  <!-- OCR fallback -->
+  <!-- OCR -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 
 <body>
   <h1>Network Asset Scan</h1>
   <div class="sub">
-    <b>Rack Audit Mode:</b> Serial/MAC first → Asset Tag next (optional). Barcode scan + OCR fallback for tiny labels.
-    <br>Tip: Tap video to refocus. If it won’t focus, use TAKE PHOTO (native autofocus).
+    <b>Rack Audit Mode:</b> Serial/MAC first → Asset Tag next (unless “No Asset Tag” checked).<br>
+    <b>iPhone focus note:</b> Safari web video may stay blurry even when your Camera app focuses. Use <b>TAKE PHOTO</b> (native camera autofocus) if needed.
   </div>
 
   <div id="app" class="card">
@@ -120,22 +118,24 @@
     </div>
 
     <div class="field">
-      <label for="serial">Serial (preferred) — Serial OR MAC required</label>
-      <input id="serial" type="text" placeholder="Auto-filled from scan/OCR (or type)" />
+      <label for="serial">Serial (Serial OR MAC required)</label>
+      <input id="serial" type="text" placeholder="Auto-filled from scan (or type)" />
     </div>
 
     <div class="field">
       <label for="mac">MAC (used only if Serial missing)</label>
-      <input id="mac" type="text" placeholder="Auto-filled from scan/OCR (auto-formats)" />
+      <input id="mac" type="text" placeholder="Auto-filled from scan (auto-formats)" />
     </div>
 
     <div class="field">
-      <label for="assetTag">Company Asset Tag (optional)</label>
-      <input id="assetTag" type="text" placeholder="Scan/type if present — optional" />
-      <div class="checkRow">
-        <input id="noAssetTag" type="checkbox" />
-        <div class="tiny"><b>No Asset Tag</b> (optional flag). You can still submit either way.</div>
-      </div>
+      <label for="assetTag">Company Asset Tag <span id="assetReqStar">*</span></label>
+      <input id="assetTag" type="text" placeholder="Auto-filled from scan (or type)" />
+
+      <label style="display:flex; gap:10px; align-items:center; margin-top:8px; color:var(--muted); font-size:12px;">
+        <input type="checkbox" id="noAssetTag" style="width:auto; padding:0; margin:0;">
+        No Asset Tag (leave blank)
+      </label>
+      <div class="tiny">If checked, you can submit with Serial/MAC only.</div>
     </div>
 
     <div class="field">
@@ -143,6 +143,8 @@
       <video id="video" autoplay muted playsinline></video>
       <div class="tiny" id="stageHint"></div>
       <div class="tiny" id="techHint"></div>
+      <div class="tiny" id="focusHint"></div>
+      <div class="tiny" id="iosHint"></div>
     </div>
 
     <div class="row">
@@ -155,13 +157,16 @@
       <div><button id="ocrBtn" class="btnSecondary big" type="button">FORCE OCR (tiny labels)</button></div>
     </div>
 
-    <div class="photoRow">
-      <div style="flex:1;">
-        <button id="photoBtn" class="btnSecondary big" type="button">TAKE PHOTO (best focus)</button>
-        <input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none;">
-        <div class="tiny">Uses native camera autofocus (best for tiny serial stickers).</div>
+    <div class="row" style="margin-top:10px;">
+      <div>
+        <button id="photoBtn" class="btnSecondary big" type="button">
+          TAKE PHOTO (iPhone focus fix)
+        </button>
       </div>
     </div>
+
+    <!-- Hidden native camera capture (works great on iPhone) -->
+    <input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none" />
 
     <button id="submitBtn" class="btnPrimary big" disabled type="button" style="margin-top:10px;">
       SUBMIT TO SHEET
@@ -181,10 +186,12 @@
  *************************************************/
 const API_BASE = "https://script.google.com/macros/s/AKfycbwlpaGqxw08bZ7jC2uxjWbOUq5Ru3SRrXHdPyTZcBq39y7vZm5nGsNjzP2LZJQTj_qUNw/exec";
 const ACCESS_KEY = new URLSearchParams(location.search).get("k") || "";
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
 function el(id){ return document.getElementById(id); }
 function setStatus(msg, cls){ const s=el('status'); s.textContent=msg||""; s.className="msg "+(cls||""); }
 function norm_(s){ return (s||"").toString().trim(); }
+function isNoAssetTag_(){ return !!el('noAssetTag')?.checked; }
 
 /*************************************************
  * KEY LOCK
@@ -221,7 +228,7 @@ async function apiSubmit(payload){
   body.set("serial", payload.serial || "");
   body.set("mac", payload.mac || "");
   body.set("assetTag", payload.assetTag || "");
-  body.set("noAssetTag", payload.noAssetTag ? "true" : "false");
+  body.set("noAssetTag", payload.noAssetTag ? "1" : "0");
 
   const res = await fetch(API_BASE, {
     method: "POST",
@@ -247,10 +254,10 @@ function formatMac(s){
 }
 
 /*************************************************
- * MODEL LISTS + LEARNING
+ * MODEL LISTS + LEARNING (same as before)
  *************************************************/
 const BASE_MODELS = {
-  "Cisco": { "Switch":[ "WS-C2960S-24TS-L","WS-C2960S-48TS-L","WS-C2960X-24PD-L","WS-C2960X-48LPD-L","Catalyst 9200","Catalyst 9300","Catalyst 9500","Catalyst 2960","Catalyst 3650","Catalyst 3850","Nexus 3K","Nexus 9K" ],
+  "Cisco": { "Switch":[ "WS-C2960S-24TS-L","Catalyst 9200","Catalyst 9300","Catalyst 9500","Catalyst 2960","Catalyst 3650","Catalyst 3850","Nexus 3K","Nexus 9K" ],
             "AP":[ "Aironet 2800","Aironet 3800","Catalyst 9115","Catalyst 9120","Catalyst 9130" ],
             "Other":[] },
   "Juniper": { "Switch":[ "EX2300","EX3400","EX4300","EX4400","QFX5100","QFX5120" ], "AP":[], "Other":[] },
@@ -270,9 +277,9 @@ const BASE_MODELS = {
   "Other": { "Switch":[], "AP":[], "Other":[] }
 };
 
-const LS_CUSTOM_MODELS = "scan2_custom_models_v5";
-const LS_RECENTS = "scan2_recent_models_v5";
-const LS_LAST_MODEL = "scan2_last_model_v5";
+const LS_CUSTOM_MODELS = "scan2_custom_models_v3";
+const LS_RECENTS = "scan2_recent_models_v3";
+const LS_LAST_MODEL = "scan2_last_model_v3";
 
 function loadJSON_(k){ try { return JSON.parse(localStorage.getItem(k)||"{}"); } catch { return {}; } }
 function saveJSON_(k, v){ localStorage.setItem(k, JSON.stringify(v||{})); }
@@ -365,51 +372,32 @@ function learnModelIfNew_(){
 }
 
 /*************************************************
- * AUTODETECT (best-effort)
+ * AUTODETECT + OCR TUNING (serial preferred)
  *************************************************/
 function detectModelFromText_(t){
   const s = norm_(t);
   const ciscoModel = s.match(/\bWS-C[0-9A-Z\-]+\b/i);
   if (ciscoModel) return ciscoModel[0].toUpperCase();
-  const moto = s.match(/\bTW[-\s]?511\b/i);
-  if (moto) return "TW-511";
   const jun = s.match(/\b(EX|QFX)\d{3,4}\b/i);
   if (jun) return jun[0].toUpperCase();
   const arubaCx = s.match(/\bCX\s?\d{4}\b/i);
   if (arubaCx) return arubaCx[0].toUpperCase().replace(/\s+/g,' ');
   const arubaAp = s.match(/\bAP-\d{3}\b/i);
   if (arubaAp) return arubaAp[0].toUpperCase();
+  const moto = s.match(/\bTW-511\b/i) || s.match(/\bTW-0?511\b/i);
+  if (moto) return "TW-511";
   return "";
 }
-
 function detectMakeFromModel_(model){
   const m = norm_(model).toUpperCase();
   if (!m) return "";
   if (m.startsWith("WS-C") || m.includes("CATALYST") || m.includes("NEXUS")) return "Cisco";
   if (m.startsWith("EX") || m.startsWith("QFX")) return "Juniper";
-  if (m.startsWith("AP-") || m.includes("CX")) return "Aruba";
+  if (m.startsWith("AP-") || m.startsWith("CX")) return "Aruba";
   if (m === "TW-511") return "Motorola";
   if (m.includes("ISAM") || m.includes("TA5000") || m.includes("E7") || m.includes("MA5600") || m.includes("MA5800")) return "DSLAM";
   return "";
 }
-
-const OUI_HINTS = {
-  "001B0C":"Cisco","0026C8":"Cisco","0C2724":"Cisco","F0F7E7":"Cisco",
-  "0010DB":"Juniper","5C5B35":"Juniper",
-  "000B86":"Aruba","D89E3F":"Aruba",
-  "F09FC2":"Ubiquiti","24A43C":"Ubiquiti",
-  "000D58":"Ruckus",
-  "FCA13E":"Fortinet",
-  "FC0A81":"Motorola"
-};
-
-function detectMakeFromMac_(mac){
-  const hex = (mac||"").toUpperCase().replace(/[^0-9A-F]/g,'');
-  if (hex.length !== 12) return "";
-  const oui = hex.slice(0,6);
-  return OUI_HINTS[oui] || "";
-}
-
 function detectDeviceTypeFromModel_(model, make){
   const m = norm_(model).toUpperCase();
   const mk = norm_(make);
@@ -418,28 +406,90 @@ function detectDeviceTypeFromModel_(model, make){
   if (mk === "Motorola") return "Other";
   return "Switch";
 }
-
 function applyAutoDetect_(decodedText){
   const raw = norm_(decodedText);
-
   const modelFromText = detectModelFromText_(raw);
-  let makeGuess = "";
-
-  if (modelFromText) makeGuess = detectMakeFromModel_(modelFromText);
-  if (!makeGuess && looksLikeMac(raw)) makeGuess = detectMakeFromMac_(raw);
-
-  if (makeGuess) el('make').value = makeGuess;
   if (modelFromText && !el('model').value.trim()) el('model').value = modelFromText;
-
+  const makeGuess = detectMakeFromModel_(el('model').value);
+  if (makeGuess) el('make').value = makeGuess;
   const typeGuess = detectDeviceTypeFromModel_(el('model').value, el('make').value);
   if (typeGuess) el('deviceType').value = typeGuess;
-
   populateModelPickers();
   updateSubmitEnabled();
 }
 
+function cleanOcr_(s){
+  return (s||"")
+    .replace(/[|]/g,'I')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function normalizeHexish_(s){
+  return (s||"")
+    .replace(/\bIC\b/g,"1C")
+    .replace(/\bID\b/g,"1D")
+    .replace(/O/g,"0")
+    .replace(/S/g,"5")
+    .replace(/B/g,"8");
+}
+function normalizeCiscoSerial_(s){
+  return (s||"")
+    .replace(/\bF0C\b/g,"FOC")
+    .replace(/\bFC0\b/g,"FCO");
+}
+function extractFromOcrText_(text){
+  let t = cleanOcr_(text).toUpperCase();
+  t = normalizeCiscoSerial_(t);
+  const hexFix = normalizeHexish_(t);
+
+  // SERIAL FIRST (Motorola style S/N: 141135..., Cisco style FOCxxxx)
+  let serial =
+      (t.match(/\bS\/N[:\s\-]*([0-9]{10,20})\b/) || [])[1]
+   || (t.match(/\bSN[:\s\-]*([A-Z0-9]{8,20})\b/) || [])[1]
+   || (t.match(/\bFOC[0-9A-Z]{7,14}\b/) || [])[0]
+   || (t.match(/\bFCW[0-9A-Z]{7,14}\b/) || [])[0]
+   || (t.match(/\bFCH[0-9A-Z]{7,14}\b/) || [])[0]
+   || (t.match(/\b[0-9]{10,14}\b/) || [])[0]
+   || (t.match(/\b[A-Z]{3}[A-Z0-9]{7,16}\b/) || [])[0]
+   || "";
+
+  // MAC SECOND
+  let mac =
+      (hexFix.match(/\b([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}\b/) || [])[0]
+   || (hexFix.match(/\b[0-9A-F]{12}\b/) || [])[0]
+   || "";
+
+  let model =
+      (t.match(/\bWS-C[0-9A-Z\-]+\b/) || [])[0]
+   || (t.match(/\bTW-511\b/) || [])[0]
+   || "";
+
+  serial = (serial||"").replace(/^SN[:\s\-]*/,"").replace(/^S\/N[:\s\-]*/,"").trim();
+  mac = mac ? formatMac(mac) : "";
+  return { serial, mac, model };
+}
+
 /*************************************************
- * DUPLICATE UI
+ * NO ASSET TAG UI
+ *************************************************/
+function applyNoAssetTagUI_(){
+  const noTag = isNoAssetTag_();
+  const a = el('assetTag');
+  const star = el('assetReqStar');
+
+  a.disabled = noTag;
+  if (star) star.textContent = noTag ? "" : "*";
+
+  if (noTag) {
+    a.value = "";
+    if (scanStage === "asset") { scanStage = "id"; stageHint_(); }
+  }
+  updateSubmitEnabled();
+  debouncedDupeCheck();
+}
+
+/*************************************************
+ * DUPLICATES
  *************************************************/
 let dupeState = { ok:true, issues:[] };
 let dupeTimer = null;
@@ -465,8 +515,7 @@ async function runDupeCheck(){
   try{
     const serial=el('serial').value.trim();
     const mac=el('mac').value.trim();
-    const assetTag=el('assetTag').value.trim(); // optional
-
+    const assetTag=el('assetTag').value.trim();
     const result = await apiCheckDuplicates(serial, mac, assetTag);
     dupeState = result || { ok:true, issues:[] };
     showDupe(dupeState.issues||[]);
@@ -479,7 +528,7 @@ async function runDupeCheck(){
 }
 
 /*************************************************
- * VALIDATION (AssetTag NOT required)
+ * VALIDATION
  *************************************************/
 function updateSubmitEnabled(){
   const deviceType=el('deviceType').value.trim();
@@ -487,23 +536,25 @@ function updateSubmitEnabled(){
   const model=el('model').value.trim();
   const serial=el('serial').value.trim();
   const mac=el('mac').value.trim();
+  const assetTag=el('assetTag').value.trim();
 
   const hasSerialOrMac=!!(serial||mac);
-  const requiredOK=deviceType && make && model && hasSerialOrMac;
+  const assetOK = isNoAssetTag_() ? true : !!assetTag;
+  const requiredOK=deviceType && make && model && assetOK && hasSerialOrMac;
 
   const noDupes=(dupeState && dupeState.ok);
   el('submitBtn').disabled = !(requiredOK && noDupes);
 }
 
 /*************************************************
- * RACK AUDIT MODE — Scan Stage (Asset optional)
+ * STAGE
  *************************************************/
 let scanStage = "id"; // "id" -> "asset"
 function stageHint_(){
   el('stageHint').textContent =
     (scanStage === "id")
       ? "Stage 1: Scan SERIAL (preferred) or MAC."
-      : "Stage 2: Asset Tag (optional) — submit anytime.";
+      : "Stage 2: Scan ASSET TAG (required).";
 }
 function beep_(){
   try{
@@ -521,46 +572,104 @@ function beep_(){
 }
 
 /*************************************************
- * CAMERA + ZXING + FORCE FOCUS (best effort)
+ * CAMERA + SCAN LOOP (ZXing-version-safe)
  *************************************************/
+let stream = null;
+let track = null;
 let reader = null;
 let scanning = false;
 let ocrBusy = false;
 let ocrTimer = null;
 
-let activeStream = null;
-let activeTrack = null;
+async function openCamera_(){
+  await closeCamera_();
 
-function buildVideoConstraints_(){
-  return {
+  const constraints = {
+    audio: false,
     video: {
       facingMode: { ideal: "environment" },
       width: { ideal: 1280 },
       height: { ideal: 720 }
-    },
-    audio: false
+      // iOS usually ignores focus constraints; we intentionally don't rely on them.
+    }
   };
+
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const video = el("video");
+  video.srcObject = stream;
+
+  await new Promise(res => video.onloadedmetadata = () => res(true));
+  await video.play().catch(()=>{});
+
+  track = stream.getVideoTracks()[0] || null;
+
+  // Best effort for Android; iOS likely ignores
+  try{
+    const caps = track?.getCapabilities ? track.getCapabilities() : null;
+    const notes = [];
+    if (caps?.focusMode?.includes?.("continuous")){
+      await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+      notes.push("focus:continuous");
+    } else if (caps?.focusMode?.includes?.("auto")){
+      await track.applyConstraints({ advanced: [{ focusMode: "auto" }] });
+      notes.push("focus:auto");
+    } else {
+      notes.push("focus:default");
+    }
+    el("focusHint").textContent = "Camera tuning: " + notes.join(", ");
+  } catch {
+    el("focusHint").textContent = "Camera tuning: default";
+  }
+
+  if (IS_IOS){
+    el("iosHint").textContent = "iPhone tip: if video stays blurry, use TAKE PHOTO (native autofocus).";
+  } else {
+    el("iosHint").textContent = "";
+  }
 }
 
-async function forceContinuousFocus_(track){
-  if (!track || !track.getCapabilities) return;
-  const caps = track.getCapabilities();
-  const adv = [];
-
-  if (caps.focusMode && Array.isArray(caps.focusMode)) {
-    if (caps.focusMode.includes("continuous")) adv.push({ focusMode: "continuous" });
-    else if (caps.focusMode.includes("auto")) adv.push({ focusMode: "auto" });
+async function closeCamera_(){
+  try{
+    if (stream){
+      stream.getTracks().forEach(t => { try{ t.stop(); }catch{} });
+    }
+  }finally{
+    stream = null;
+    track = null;
+    const video = el("video");
+    if (video) video.srcObject = null;
+    el("focusHint").textContent = "";
   }
+}
 
-  if (caps.zoom) {
-    const zMin = caps.zoom.min ?? 1;
-    const zMax = caps.zoom.max ?? 1;
-    const z = Math.min(zMax, Math.max(zMin, 1.2));
-    adv.push({ zoom: z });
+// ZXing "decode once from video element" loop (works across versions)
+async function decodeLoop_(){
+  const video = el("video");
+  if (!reader) reader = new ZXing.BrowserMultiFormatReader();
+
+  while (scanning){
+    try{
+      // Some builds expose decodeOnceFromVideoElement; some expose decodeFromVideoElement (promise).
+      if (typeof reader.decodeOnceFromVideoElement === "function"){
+        const result = await reader.decodeOnceFromVideoElement(video);
+        if (result?.text){
+          handleDecodedText_(result.text, "barcode");
+          await new Promise(r=>setTimeout(r, 120));
+        }
+      } else if (typeof reader.decodeFromVideoElement === "function"){
+        const result = await reader.decodeFromVideoElement(video);
+        if (result?.text){
+          handleDecodedText_(result.text, "barcode");
+          await new Promise(r=>setTimeout(r, 120));
+        }
+      } else {
+        throw new Error("ZXing build missing video decode methods. (unpkg mismatch)");
+      }
+    } catch (e){
+      // NotFoundException is normal when nothing is detected
+      await new Promise(r=>setTimeout(r, 80));
+    }
   }
-
-  if (!adv.length) return;
-  try { await track.applyConstraints({ advanced: adv }); } catch {}
 }
 
 async function startScan(){
@@ -572,164 +681,35 @@ async function startScan(){
   stageHint_();
 
   try{
-    if (!reader) reader = new ZXing.BrowserMultiFormatReader();
+    await openCamera_();
 
-    activeStream = await navigator.mediaDevices.getUserMedia(buildVideoConstraints_());
-    el("video").srcObject = activeStream;
-
-    activeTrack = activeStream.getVideoTracks()[0] || null;
-    await forceContinuousFocus_(activeTrack);
-
+    // Auto OCR fallback if barcode doesn't hit quickly
     if (ocrTimer) clearTimeout(ocrTimer);
     ocrTimer = setTimeout(async ()=>{
-      if (scanning && !ocrBusy) await runOCRFallback("auto");
+      if (scanning && !ocrBusy) await runOCRFromVideo_("auto");
     }, 1400);
 
-    await reader.decodeFromStream(
-      activeStream,
-      el("video"),
-      (result, err) => {
-        if (result?.text){
-          if (ocrTimer) clearTimeout(ocrTimer);
-          try{ reader.reset(); }catch{}
-          scanning = false;
-
-          handleDecodedText_(result.text, "barcode");
-          setTimeout(()=>startScan(), 120);
-        }
-      }
-    );
-
     setStatus("Camera ready — scan now.", "warn");
+    decodeLoop_(); // run async loop (no await)
+
   }catch(e){
     scanning = false;
     setStatus("Camera error: " + (e.message || e), "bad");
-    stopScan();
+    await closeCamera_();
   }
 }
 
-function stopScan(){
-  try{ reader?.reset(); }catch{}
+async function stopScan(){
   scanning = false;
   if (ocrTimer) clearTimeout(ocrTimer);
-
-  try{ if (activeStream) activeStream.getTracks().forEach(t => t.stop()); }catch{}
-  activeStream = null;
-  activeTrack = null;
+  try{ reader?.reset?.(); }catch{}
+  await closeCamera_();
   setStatus("Stopped.", "");
 }
 
 /*************************************************
- * OCR (improved make/model/serial/mac for Cisco + Motorola)
+ * OCR FROM VIDEO (fast crop)
  *************************************************/
-function cleanOcr_(s){
-  return (s||"").replace(/[|]/g,'I').replace(/\s+/g,' ').trim();
-}
-
-function extractFromOcrText_(text){
-  const raw = cleanOcr_(text);
-  const t = raw.toUpperCase();
-
-  // MAKE keywords (photo OCR gets brand words more reliably)
-  let make = "";
-  if (/\bMOTOROLA\b/.test(t) || /\bMOTOROLA\s+SOLUTIONS\b/.test(t)) make = "Motorola";
-  else if (/\bCISCO\b/.test(t) || /\bCISCO\s+SYSTEMS\b/.test(t)) make = "Cisco";
-  else if (/\bUBIQUITI\b/.test(t)) make = "Ubiquiti";
-  else if (/\bARUBA\b/.test(t) || /\bHPE\b/.test(t)) make = "Aruba";
-  else if (/\bJUNIPER\b/.test(t)) make = "Juniper";
-
-  // MAC
-  const mac =
-    (t.match(/([0-9A-F]{2}[:\-]){5}[0-9A-F]{2}/) || [])[0] ||
-    (t.match(/\b[0-9A-F]{12}\b/) || [])[0] ||
-    "";
-
-  // SERIAL (prefer explicit tags)
-  let serial = "";
-  const snTag = t.match(/\bS\/?N[:\s\-]*([A-Z0-9]{8,24})\b/);
-  if (snTag && snTag[1]) serial = snTag[1];
-
-  if (!serial) {
-    const sn2 = t.match(/\bSN[:\s\-]*([A-Z0-9]{8,24})\b/);
-    if (sn2 && sn2[1]) serial = sn2[1];
-  }
-
-  if (!serial) {
-    const c = t.match(/\bFOC[0-9A-Z]{6,18}\b/);
-    if (c) serial = c[0];
-  }
-
-  if (!serial) {
-    const n = t.match(/\b\d{10,18}\b/);
-    if (n) serial = n[0];
-  }
-
-  // MODEL
-  let model = "";
-  const ciscoWs = t.match(/\bWS-C[0-9A-Z\-]+\b/);
-  if (ciscoWs) model = ciscoWs[0];
-  if (!model && /\bTW[-\s]?511\b/.test(t)) model = "TW-511";
-  if (!model){
-    const jun = t.match(/\b(EX|QFX)\d{3,4}\b/);
-    if (jun) model = jun[0];
-  }
-  if (!model){
-    const arubaAp = t.match(/\bAP-\d{3}\b/);
-    if (arubaAp) model = arubaAp[0];
-  }
-  if (!model){
-    const arubaCx = t.match(/\bCX\s?\d{4}\b/);
-    if (arubaCx) model = arubaCx[0].replace(/\s+/g," ");
-  }
-
-  if (!make && model) make = detectMakeFromModel_(model);
-
-  return {
-    rawText: raw,
-    make,
-    model: model ? model.toUpperCase() : "",
-    serial: serial || "",
-    mac: mac ? formatMac(mac) : ""
-  };
-}
-
-async function ocrCanvasToExtract_(canvas){
-  const { data } = await Tesseract.recognize(
-    canvas,
-    "eng",
-    {
-      tessedit_pageseg_mode: "6",
-      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:-./ ",
-      preserve_interword_spaces: "1"
-    }
-  );
-  const text = cleanOcr_(data.text || "");
-  if (!text) return { make:"", model:"", serial:"", mac:"", rawText:"" };
-  return extractFromOcrText_(text);
-}
-
-function applyExtract_(ex){
-  if (!ex) return;
-
-  if (ex.make && !el('make').value.trim()) el('make').value = ex.make;
-  if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
-
-  if (ex.model) applyAutoDetect_(ex.model);
-
-  // serial preferred
-  if (ex.serial && !el('serial').value.trim()) el('serial').value = ex.serial;
-  if (!el('serial').value.trim() && ex.mac && !el('mac').value.trim()) el('mac').value = ex.mac;
-
-  if (scanStage === "id" && (el('serial').value.trim() || el('mac').value.trim())){
-    scanStage = "asset";
-    stageHint_();
-    beep_();
-    setStatus("Captured from OCR — Asset Tag optional. You can submit now.", "ok");
-  } else {
-    setStatus("OCR complete — review fields.", "ok");
-  }
-}
-
 function cropCanvasFromVideo_(video){
   if (!video || !video.videoWidth) throw new Error("Video not ready.");
   const vw = video.videoWidth;
@@ -740,47 +720,85 @@ function cropCanvasFromVideo_(video){
   const ctx = full.getContext("2d");
   ctx.drawImage(video, 0, 0, vw, vh);
 
-  // crop wide center band
-  const cropX = Math.floor(vw * 0.05);
-  const cropW = Math.floor(vw * 0.90);
-  const cropY = Math.floor(vh * 0.28);
-  const cropH = Math.floor(vh * 0.55);
+  // Crop lower middle (labels usually live here in your shots)
+  const cropX = Math.floor(vw * 0.08);
+  const cropW = Math.floor(vw * 0.84);
+  const cropY = Math.floor(vh * 0.22);
+  const cropH = Math.floor(vh * 0.52);
 
   const crop = document.createElement("canvas");
   crop.width = cropW; crop.height = cropH;
   const cctx = crop.getContext("2d");
   cctx.drawImage(full, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-  // contrast boost
+  // Contrast bump
   const img = cctx.getImageData(0,0,cropW,cropH);
   const d = img.data;
   for(let i=0;i<d.length;i+=4){
-    const r=d[i], g=d[i+1], b=d[i+2];
-    const y = (0.299*r + 0.587*g + 0.114*b);
-    const v = y > 165 ? 255 : (y < 85 ? 0 : y);
-    d[i]=d[i+1]=d[i+2]=v;
+    let y = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+    y = (y - 128) * 1.4 + 128;
+    y = Math.max(0, Math.min(255, y));
+    d[i]=d[i+1]=d[i+2]=y;
   }
   cctx.putImageData(img,0,0);
 
   return crop;
 }
 
-async function runOCRFallback(mode, imageCanvas){
+async function runOCRFromVideo_(mode){
   if (ocrBusy) return;
   ocrBusy = true;
+
   try{
     setStatus(mode === "auto" ? "Tiny label — reading text…" : "OCR reading… hold steady.", "warn");
 
-    const src = imageCanvas || cropCanvasFromVideo_(el("video"));
-    const ex = await ocrCanvasToExtract_(src);
+    const video = el("video");
+    const crop = cropCanvasFromVideo_(video);
 
-    if (!ex.rawText) {
+    const { data } = await Tesseract.recognize(
+      crop,
+      "eng",
+      {
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:-./() ",
+        preserve_interword_spaces: "1"
+      }
+    );
+
+    const text = cleanOcr_(data.text || "");
+    if (!text){
       setStatus("OCR found nothing — move closer / better light.", "warn");
       return;
     }
 
-    applyExtract_(ex);
-    populateModelPickers();
+    const ex = extractFromOcrText_(text);
+
+    if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
+    if (ex.model) applyAutoDetect_(ex.model);
+
+    if (scanStage === "id"){
+      // SERIAL FIRST
+      if (ex.serial && !el('serial').value.trim()){
+        el('serial').value = ex.serial;
+      } else if (!el('serial').value.trim() && ex.mac && !el('mac').value.trim()){
+        el('mac').value = ex.mac;
+      }
+
+      if (el('serial').value.trim() || el('mac').value.trim()){
+        beep_();
+        if (isNoAssetTag_()){
+          setStatus("Captured via OCR — ready to submit (No Asset Tag).", "ok");
+        } else {
+          scanStage = "asset";
+          stageHint_();
+          setStatus("Captured via OCR — now scan Asset Tag.", "ok");
+        }
+      } else {
+        setStatus("OCR read text but no Serial/MAC matched.", "warn");
+      }
+    } else {
+      setStatus("OCR complete — scan Asset Tag.", "warn");
+    }
+
     updateSubmitEnabled();
     debouncedDupeCheck();
 
@@ -792,80 +810,113 @@ async function runOCRFallback(mode, imageCanvas){
 }
 
 /*************************************************
- * TAKE PHOTO OCR (native autofocus)
+ * OCR FROM PHOTO (iPhone focus fix)
  *************************************************/
-async function runOCRFromFile_(file){
-  if (!file) return;
-
-  const img = new Image();
-  const url = URL.createObjectURL(file);
-
-  await new Promise((resolve, reject)=>{
-    img.onload = resolve;
+function fileToImage_(file){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onload = ()=>resolve(img);
     img.onerror = reject;
-    img.src = url;
+    img.src = URL.createObjectURL(file);
   });
+}
 
-  const full = document.createElement("canvas");
-  full.width = img.naturalWidth;
-  full.height = img.naturalHeight;
-  const ctx = full.getContext("2d");
-  ctx.drawImage(img, 0, 0);
+async function runOCRFromPhotoFile_(file){
+  if (!file) return;
+  setStatus("Processing photo (native autofocus) …", "warn");
 
-  URL.revokeObjectURL(url);
+  const img = await fileToImage_(file);
 
-  // preprocess (full image)
-  const prep = document.createElement("canvas");
-  prep.width = full.width; prep.height = full.height;
-  const pctx = prep.getContext("2d");
-  pctx.drawImage(full,0,0);
+  // Draw image to canvas (downscale for speed)
+  const maxW = 1400;
+  const scale = Math.min(1, maxW / img.width);
+  const w = Math.floor(img.width * scale);
+  const h = Math.floor(img.height * scale);
 
-  const imgd = pctx.getImageData(0,0,prep.width,prep.height);
-  const d = imgd.data;
-  for(let i=0;i<d.length;i+=4){
-    const r=d[i], g=d[i+1], b=d[i+2];
-    const y = (0.299*r + 0.587*g + 0.114*b);
-    const v = y > 165 ? 255 : (y < 85 ? 0 : y);
-    d[i]=d[i+1]=d[i+2]=v;
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, w, h);
+
+  // OCR
+  const { data } = await Tesseract.recognize(
+    canvas,
+    "eng",
+    {
+      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:-./() ",
+      preserve_interword_spaces: "1"
+    }
+  );
+
+  const text = cleanOcr_(data.text || "");
+  if (!text){
+    setStatus("Photo OCR found nothing — retake closer.", "warn");
+    return;
   }
-  pctx.putImageData(imgd,0,0);
 
-  await runOCRFallback("manual", prep);
+  const ex = extractFromOcrText_(text);
+
+  if (ex.model && !el('model').value.trim()) el('model').value = ex.model;
+  if (ex.model) applyAutoDetect_(ex.model);
+
+  if (ex.serial && !el('serial').value.trim()) el('serial').value = ex.serial;
+  if (!el('serial').value.trim() && ex.mac && !el('mac').value.trim()) el('mac').value = ex.mac;
+
+  beep_();
+
+  if (isNoAssetTag_()){
+    setStatus("Photo OCR captured — ready to submit (No Asset Tag).", "ok");
+  } else {
+    scanStage = "asset";
+    stageHint_();
+    setStatus("Photo OCR captured — now scan Asset Tag.", "ok");
+  }
+
+  updateSubmitEnabled();
+  debouncedDupeCheck();
 }
 
 /*************************************************
- * HANDLE DECODED TEXT (barcode/QR)
+ * HANDLE DECODED TEXT (serial preferred)
  *************************************************/
 function handleDecodedText_(text, source){
   const raw = norm_(text);
   el('techHint').textContent = `Last input: ${source} → ${raw}`;
-
   applyAutoDetect_(raw);
 
   if (scanStage === "id"){
-    if (looksLikeMac(raw)){
-      el('mac').value = formatMac(raw);
-      setStatus("MAC captured — Asset Tag optional. You can submit now.", "ok");
+    // Prefer serial: if it doesn't look like MAC, treat as serial.
+    if (!looksLikeMac(raw)){
+      el('serial').value = raw;
       beep_();
-      scanStage = "asset";
-    } else {
-      const m = detectModelFromText_(raw);
-      if (m){
-        if (!el('model').value.trim()) el('model').value = m;
-        setStatus("Model detected — now scan Serial/MAC.", "warn");
-        beep_();
+      if (isNoAssetTag_()){
+        setStatus("Serial captured — ready to submit (No Asset Tag).", "ok");
       } else {
-        el('serial').value = raw;
-        setStatus("Serial captured — Asset Tag optional. You can submit now.", "ok");
-        beep_();
+        setStatus("Serial captured — now scan Asset Tag.", "ok");
+        scanStage = "asset";
+      }
+    } else {
+      // MAC only if serial missing
+      if (!el('serial').value.trim()){
+        el('mac').value = formatMac(raw);
+      }
+      beep_();
+      if (isNoAssetTag_()){
+        setStatus("MAC captured — ready to submit (No Asset Tag).", "ok");
+      } else {
+        setStatus("MAC captured — now scan Asset Tag.", "ok");
         scanStage = "asset";
       }
     }
   } else {
-    // asset stage: treat scan as asset tag, but it's optional
-    el('assetTag').value = raw;
-    setStatus("Asset Tag captured — ready to submit.", "ok");
-    beep_();
+    if (isNoAssetTag_()){
+      setStatus("No Asset Tag enabled — ready to submit.", "ok");
+      beep_();
+    } else {
+      el('assetTag').value = raw;
+      setStatus("Asset Tag captured — ready to submit.", "ok");
+      beep_();
+    }
   }
 
   stageHint_();
@@ -874,26 +925,19 @@ function handleDecodedText_(text, source){
 }
 
 /*************************************************
- * TORCH (Flashlight)
+ * TORCH
  *************************************************/
 let torchOn = false;
-
 async function toggleTorch(){
-  const video = el('video');
-  const stream = video && video.srcObject ? video.srcObject : activeStream;
-  if (!stream){
+  if (!track){
     setStatus("Flashlight: camera not running yet.", "warn");
     return;
   }
-  const track = stream.getVideoTracks()[0];
-  if (!track) return;
-
   const caps = track.getCapabilities ? track.getCapabilities() : null;
   if (!caps || !caps.torch){
     setStatus("Flashlight not supported on this device/browser.", "warn");
     return;
   }
-
   torchOn = !torchOn;
   try{
     await track.applyConstraints({ advanced: [{ torch: torchOn }] });
@@ -919,8 +963,8 @@ async function submit(){
     model: el('model').value.trim(),
     serial: el('serial').value.trim(),
     mac: el('mac').value.trim(),
-    assetTag: el('assetTag').value.trim(), // optional
-    noAssetTag: el('noAssetTag').checked // optional flag
+    assetTag: el('assetTag').value.trim(),
+    noAssetTag: isNoAssetTag_()
   };
 
   try{
@@ -932,7 +976,8 @@ async function submit(){
     el('serial').value="";
     el('mac').value="";
     el('assetTag').value="";
-    el('noAssetTag').checked=false;
+    el('noAssetTag').checked = false;
+    applyNoAssetTagUI_();
 
     scanStage="id";
     stageHint_();
@@ -966,36 +1011,20 @@ el('unknownModelBtn').addEventListener('click', ()=> el('model').focus());
   el(id).addEventListener('input', ()=>{ updateSubmitEnabled(); debouncedDupeCheck(); });
 });
 
-el('noAssetTag').addEventListener('change', ()=>{
-  if (el('noAssetTag').checked) el('assetTag').value="";
-  stageHint_();
-  updateSubmitEnabled();
-  debouncedDupeCheck();
-});
-
 el('model').addEventListener('blur', ()=>{ learnModelIfNew_(); updateSubmitEnabled(); });
 
+el('noAssetTag').addEventListener('change', applyNoAssetTagUI_);
 el('startBtn').addEventListener('click', ()=>startScan());
 el('stopBtn').addEventListener('click', ()=>stopScan());
 el('submitBtn').addEventListener('click', ()=>submit());
 el('torchBtn').addEventListener('click', ()=>toggleTorch());
-el('ocrBtn').addEventListener('click', async ()=>{ await runOCRFallback("manual"); });
+el('ocrBtn').addEventListener('click', async ()=>{ await runOCRFromVideo_("manual"); });
 
-el("video").addEventListener("click", async ()=>{
-  try{
-    if (!activeTrack) return;
-    setStatus("Refocusing… tap again if needed.", "warn");
-    await forceContinuousFocus_(activeTrack);
-    setTimeout(()=>setStatus("Scanning…", ""), 500);
-  }catch{}
-});
-
-el("photoBtn").addEventListener("click", ()=> el("photoInput").click());
-el("photoInput").addEventListener("change", async (e)=>{
-  const f = e.target.files && e.target.files[0];
-  if (!f) return;
-  await runOCRFromFile_(f);
-  e.target.value = "";
+el('photoBtn').addEventListener('click', ()=> el('photoInput').click());
+el('photoInput').addEventListener('change', async (e)=>{
+  const file = e.target.files?.[0];
+  e.target.value = ""; // allow re-pick same image
+  if (file) await runOCRFromPhotoFile_(file);
 });
 
 window.addEventListener('load', ()=>{
@@ -1003,8 +1032,9 @@ window.addEventListener('load', ()=>{
   populateModelPickers();
   scanStage="id";
   stageHint_();
+  applyNoAssetTagUI_();
   updateSubmitEnabled();
-  if (ACCESS_KEY) setStatus("Tap START SCANNING (or TAKE PHOTO for best focus).", "");
+  if (ACCESS_KEY) setStatus("Tap START SCANNING (or TAKE PHOTO on iPhone).", "");
 });
 </script>
 </body>
